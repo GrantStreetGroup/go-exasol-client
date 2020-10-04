@@ -22,6 +22,7 @@ import (
 	"sync"
 
 	"github.com/davecgh/go-spew/spew"
+	"github.com/op/go-logging"
 )
 
 var keywordLock sync.RWMutex
@@ -75,7 +76,7 @@ func Transpose(matrix [][]interface{}) [][]interface{} {
 
 func (c *Conn) error(args ...interface{}) {
 	if c.Conf.SuppressError == false {
-		log.Error(args...)
+		c.log.Error(args...)
 	}
 }
 
@@ -91,14 +92,14 @@ func transposeToChan(ch chan<- []interface{}, matrix []interface{}) {
 }
 
 // For debugging
-func warnJson(msg interface{}) {
+func warnJson(l *logging.Logger, msg interface{}) {
 	json, _ := json.Marshal(msg)
-	log.Errorf("WARNING: %s", json)
+	l.Errorf("WARNING: %s", json)
 }
 
-func dieJson(msg interface{}) {
+func dieJson(l *logging.Logger, msg interface{}) {
 	json, _ := json.Marshal(msg)
-	log.Panicf("DIEING: %s", json)
+	l.Panicf("DIEING: %s", json)
 }
 
 func dump(i interface{}) {

@@ -35,13 +35,13 @@ func (c *Conn) wsConnect() {
 		Scheme: "ws",
 		Host:   uri,
 	}
-	log.Debugf("EXA: connecting to %s", u.String())
+	c.log.Debugf("EXA: connecting to %s", u.String())
 	// According to documentation:
 	// > It is safe to call Dialer's methods concurrently.
 	ws, resp, err := defaultDialer.Dial(u.String(), nil)
 	if err != nil {
-		log.Debugf("resp:%s", resp)
-		log.Fatal("dial:", err)
+		c.log.Debugf("resp:%s", resp)
+		c.log.Fatal("dial:", err)
 	}
 	c.ws = ws
 }
@@ -67,7 +67,7 @@ func (c *Conn) asyncSend(request interface{}) (func() (map[string]interface{}, e
 		err = c.ws.ReadJSON(&response)
 
 		if err != nil {
-			log.Panicf("Error recving: %s", err)
+			c.log.Panicf("Error recving: %s", err)
 		} else if response["status"] != "ok" {
 			exception := response["exception"].(map[string]interface{})
 			err = errors.New(exception["text"].(string))

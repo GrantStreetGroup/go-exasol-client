@@ -21,16 +21,21 @@ import (
 	"fmt"
 	"net"
 	"strconv"
+
+	"github.com/op/go-logging"
 )
 
 type Proxy struct {
 	conn net.Conn
 	Host string
 	Port uint32
+	log  *logging.Logger
 }
 
 func NewProxy(host string, port uint16) (*Proxy, error) {
-	p := &Proxy{}
+	p := &Proxy{
+		log: logging.MustGetLogger("exasol"),
+	}
 
 	var err error
 	uri := fmt.Sprintf("%s:%d", host, port)
@@ -58,7 +63,7 @@ func NewProxy(host string, port uint16) (*Proxy, error) {
 
 	p.Port = binary.LittleEndian.Uint32(resp[4:])
 	p.Host = string(bytes.Trim(resp[8:], "\x00")) // Remove nulls
-	log.Debugf("EXA: Proxy is %s:%d", p.Host, p.Port)
+	p.log.Debugf("EXA: Proxy is %s:%d", p.Host, p.Port)
 
 	return p, nil
 }
@@ -71,7 +76,7 @@ func (p *Proxy) Read(data chan<- []byte) (int64, error) {
 			return 0, fmt.Errorf("Unable to read from proxy(1): %s", err)
 		}
 		// blank line means end of headers
-		log.Debug("Got header:", string(line))
+		p.log.Debug("Got header:", string(line))
 		if len(line) == 0 {
 			break
 		}
@@ -185,7 +190,7 @@ func (p *Proxy) sendHeaders(headers []string) error {
 	headers = append(headers, "")
 	for _, header := range headers {
 		header += "\r\n"
-		log.Debug("Sent Header: ", header)
+		p.log.Debug("Sent Header: ", header)
 		_, err := p.conn.Write([]byte(header))
 		if err != nil {
 			return fmt.Errorf("Unable to send header <%s>to proxy: %s", header, err)
