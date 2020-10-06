@@ -115,7 +115,7 @@ func (c *Conn) StreamExecute(origSQL string, data <-chan []byte) error {
 			c.error("Retrying...")
 		}
 
-		proxy, err := NewProxy(c.Conf.Host, c.Conf.Port)
+		proxy, err := NewProxy(c.Conf.Host, c.Conf.Port, c.log)
 		if err != nil {
 			c.error(err)
 			lastErr = err
@@ -180,7 +180,7 @@ func (c *Conn) StreamQuery(origSQL string, data chan<- []byte) (int64, error) {
 			c.error("Retrying...")
 		}
 
-		proxy, err := NewProxy(c.Conf.Host, c.Conf.Port)
+		proxy, err := NewProxy(c.Conf.Host, c.Conf.Port, c.log)
 		if err != nil {
 			c.error(err)
 			lastErr = err

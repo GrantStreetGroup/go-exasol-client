@@ -32,9 +32,11 @@ type Proxy struct {
 	log  *logging.Logger
 }
 
-func NewProxy(host string, port uint16) (*Proxy, error) {
+// NewProxy must never be used concurrently with the creating Conn.
+// Violating this rule will introduce data races into your program.
+func NewProxy(host string, port uint16, log *logging.Logger) (*Proxy, error) {
 	p := &Proxy{
-		log: logging.MustGetLogger("exasol"),
+		log: log,
 	}
 
 	var err error
