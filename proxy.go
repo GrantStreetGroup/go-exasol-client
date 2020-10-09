@@ -43,7 +43,7 @@ func NewProxy(host string, port uint16, log *logging.Logger) (*Proxy, error) {
 	uri := fmt.Sprintf("%s:%d", host, port)
 	p.conn, err = net.Dial("tcp", uri)
 	if err != nil {
-		return nil, fmt.Errorf("Unable to setup proxy (1):", err)
+		return nil, fmt.Errorf("Unable to setup proxy (1): %s", err)
 	}
 
 	// This asks EXASOL to setup a proxy connected to this socket
@@ -53,14 +53,14 @@ func NewProxy(host string, port uint16, log *logging.Logger) (*Proxy, error) {
 	binary.LittleEndian.PutUint32(req[8:], 1)
 	_, err = p.conn.Write(req)
 	if err != nil {
-		return nil, fmt.Errorf("Unable to setup proxy (2):", err)
+		return nil, fmt.Errorf("Unable to setup proxy (2): %s", err)
 	}
 
 	// EXASOL replies with the internal host/port it's listening on
 	resp := make([]byte, 24)
 	_, err = p.conn.Read(resp)
 	if err != nil {
-		return nil, fmt.Errorf("Unable to setup proxy (3):", err)
+		return nil, fmt.Errorf("Unable to setup proxy (3): %s", err)
 	}
 
 	p.Port = binary.LittleEndian.Uint32(resp[4:])
