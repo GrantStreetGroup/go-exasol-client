@@ -38,8 +38,6 @@ import (
 	"github.com/op/go-logging"
 )
 
-var log = logging.MustGetLogger("exasol")
-
 /*--- Public Interface ---*/
 
 type ConnConf struct {
@@ -59,6 +57,7 @@ type Conn struct {
 	SessionID uint64
 	Stats     map[string]int
 
+	log           *logging.Logger
 	ws            *websocket.Conn
 	prepStmtCache map[string]*prepStmt
 }
@@ -72,13 +71,14 @@ type DataType struct {
 }
 
 func Connect(conf ConnConf) *Conn {
-	initLogging(conf.LogLevel)
 
 	c := &Conn{
 		Conf:          conf,
 		Stats:         map[string]int{},
+		log:           logging.MustGetLogger("exasol"),
 		prepStmtCache: map[string]*prepStmt{},
 	}
+	c.initLogging(conf.LogLevel)
 
 	// Both of these are fatal if they encounter an error
 	c.wsConnect()
@@ -87,28 +87,28 @@ func Connect(conf ConnConf) *Conn {
 }
 
 func (c *Conn) Disconnect() {
-	log.Notice("EXA: Disconnecting SessionID:", c.SessionID)
+	c.log.Notice("EXA: Disconnecting SessionID:", c.SessionID)
 
 	for _, ps := range c.prepStmtCache {
 		c.closePrepStmt(ps.sth)
 	}
 	_, err := c.send(&disconnectJSON{Command: "disconnect"})
 	if err != nil {
-		log.Warning("Unable to disconnect from EXASOL: ", err)
+		c.log.Warning("Unable to disconnect from EXASOL: ", err)
 	}
 	c.ws.Close()
 	c.ws = nil
 }
 
 func (c *Conn) GetSessionAttr() (map[string]interface{}, error) {
-	log.Info("EXA: Getting Attr")
+	c.log.Info("EXA: Getting Attr")
 	req := &sendAttrJSON{Command: "getAttributes"}
 	res, err := c.send(req)
 	return res, err
 }
 
 func (c *Conn) EnableAutoCommit() {
-	log.Info("EXA: Enabling AutoCommit")
+	c.log.Info("EXA: Enabling AutoCommit")
 	c.send(&sendAttrJSON{
 		Command:    "setAttributes",
 		Attributes: attrJSON{AutoCommit: true},
@@ -116,7 +116,7 @@ func (c *Conn) EnableAutoCommit() {
 }
 
 func (c *Conn) DisableAutoCommit() {
-	log.Info("EXA: Disabling AutoCommit")
+	c.log.Info("EXA: Disabling AutoCommit")
 	// We have to roll our own map because attrJSON
 	// needs to have AutoCommit set to omitempty which
 	// causes autocommit=false not to be sent :-(
@@ -129,13 +129,13 @@ func (c *Conn) DisableAutoCommit() {
 }
 
 func (c *Conn) Rollback() error {
-	log.Info("EXA: Rolling back transaction")
+	c.log.Info("EXA: Rolling back transaction")
 	_, err := c.Execute("ROLLBACK")
 	return err
 }
 
 func (c *Conn) Commit() error {
-	log.Info("EXA: Committing transaction")
+	c.log.Info("EXA: Committing transaction")
 	_, err := c.Execute("COMMIT")
 	return err
 }
@@ -164,7 +164,7 @@ func (c *Conn) Execute(sql string, args ...interface{}) (map[string]interface{},
 	// Just a simple execute (no prepare) if there are no binds
 	if binds == nil || len(binds) == 0 ||
 		binds[0] == nil || len(binds[0]) == 0 {
-		log.Info("EXA: Execute Query: ", sql)
+		c.log.Info("EXA: Execute Query: ", sql)
 		req := &executeStmtJSON{
 			Command:    "execute",
 			Attributes: attrJSON{CurrentSchema: schema},
@@ -191,7 +191,7 @@ func (c *Conn) Execute(sql string, args ...interface{}) (map[string]interface{},
 	numCols := len(binds)
 	numRows := len(binds[0])
 
-	log.Infof("EXA: Executing %d x %d stmt", numCols, numRows)
+	c.log.Infof("EXA: Executing %d x %d stmt", numCols, numRows)
 	execReq := &execPrepStmtJSON{
 		Command:         "executePreparedStatement",
 		StatementHandle: int(ps.sth),
@@ -206,13 +206,13 @@ func (c *Conn) Execute(sql string, args ...interface{}) (map[string]interface{},
 	if err != nil &&
 		regexp.MustCompile("Statement handle not found").MatchString(err.Error()) {
 		// Not sure what causes this but I've seen it happen. So just try again.
-		log.Warning("Statement handle not found:", ps.sth)
+		c.log.Warning("Statement handle not found:", ps.sth)
 		delete(c.prepStmtCache, sql)
 		ps, err := c.getPrepStmt(schema, sql)
 		if err != nil {
 			return nil, err
 		}
-		log.Warning("Retrying with:", ps.sth)
+		c.log.Warning("Retrying with:", ps.sth)
 		execReq.StatementHandle = int(ps.sth)
 		res, err = c.send(execReq)
 	}
@@ -235,7 +235,7 @@ func (c *Conn) FetchChan(sql string, args ...interface{}) (<-chan []interface{},
 		return nil, err
 	}
 	if response["numResults"].(float64) != 1 {
-		log.Fatalf("Unexpected numResults: %s", response["numResults"].(float64))
+		c.log.Fatalf("Unexpected numResults: %s", response["numResults"].(float64))
 	}
 	results := response["results"].([]interface{})[0].(map[string]interface{})
 	// TODO die gracefully if there is no resultSet. This happens, for instance,
@@ -257,7 +257,7 @@ func (c *Conn) FetchChan(sql string, args ...interface{}) (<-chan []interface{},
 				}
 				chunk, err := c.send(fetchReq)
 				if err != nil {
-					log.Panic(err)
+					c.log.Panic(err)
 				}
 				i += chunk["numRows"].(float64)
 				transposeToChan(ch, chunk["data"].([]interface{}))
@@ -269,7 +269,7 @@ func (c *Conn) FetchChan(sql string, args ...interface{}) (<-chan []interface{},
 			}
 			_, err = c.send(closeRSReq)
 			if err != nil {
-				log.Warning("Unable to close result set:", err)
+				c.log.Warning("Unable to close result set:", err)
 			}
 		} else {
 			transposeToChan(ch, rs["data"].([]interface{}))
@@ -351,13 +351,13 @@ type closeResultSetJSON struct {
 	ResultSetHandles []float64 `json:"resultSetHandles"`
 }
 
-func initLogging(logLevelStr string) {
+func (c *Conn) initLogging(logLevelStr string) {
 	if logLevelStr == "" {
 		logLevelStr = "error"
 	}
 	logLevel, err := logging.LogLevel(logLevelStr)
 	if err != nil {
-		log.Fatal("Unrecognized log level", err)
+		c.log.Fatal("Unrecognized log level", err)
 	}
 	logFormat := logging.MustStringFormatter(
 		"%{color}%{time:15:04:05.000} %{shortfunc}: " +
@@ -367,18 +367,18 @@ func initLogging(logLevelStr string) {
 	formattedBackend := logging.NewBackendFormatter(backend, logFormat)
 	leveledBackend := logging.AddModuleLevel(formattedBackend)
 	leveledBackend.SetLevel(logLevel, "exasol")
-	log.SetBackend(leveledBackend)
+	c.log.SetBackend(leveledBackend)
 }
 
 func (c *Conn) login() {
-	log.Notice("EXA: Logging in")
+	c.log.Notice("EXA: Logging in")
 	loginReq := &loginJSON{
 		Command:         "login",
 		ProtocolVersion: 1,
 	}
 	res, err := c.send(loginReq) // TODO change req to pointer
 	if err != nil {
-		log.Fatal("Unable to login to EXASOL: ", err)
+		c.log.Fatal("Unable to login to EXASOL: ", err)
 	}
 
 	pubKeyMod, _ := hex.DecodeString(res["publicKeyModulus"].(string))
@@ -394,13 +394,13 @@ func (c *Conn) login() {
 	password := []byte(c.Conf.Password)
 	encPass, err := rsa.EncryptPKCS1v15(rand.Reader, &pubKey, password)
 	if err != nil {
-		log.Fatal("Pass Enc error:", err, ": ", pubKeyExp)
+		c.log.Fatal("Pass Enc error:", err, ": ", pubKeyExp)
 	}
 	b64Pass := base64.StdEncoding.EncodeToString(encPass)
 
 	osUser, _ := user.Current()
 
-	log.Notice("EXA: Authenticating")
+	c.log.Notice("EXA: Authenticating")
 	authReq := &authJSON{
 		Username:         c.Conf.Username,
 		Password:         b64Pass,
@@ -413,9 +413,9 @@ func (c *Conn) login() {
 	}
 	resp, err := c.send(authReq)
 	if err != nil {
-		log.Fatal("Unable authenticate with EXASOL: ", err)
+		c.log.Fatal("Unable authenticate with EXASOL: ", err)
 	}
 	c.SessionID = uint64(resp["sessionId"].(float64))
-	log.Notice("EXA: Connected SessionID:", c.SessionID)
+	c.log.Notice("EXA: Connected SessionID:", c.SessionID)
 	c.ws.EnableWriteCompression(false)
 }

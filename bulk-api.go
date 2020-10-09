@@ -64,7 +64,7 @@ func (c *Conn) BulkInsert(schema, table string, data *bytes.Buffer) (err error) 
 
 func (c *Conn) BulkExecute(sql string, data *bytes.Buffer) error {
 	if data == nil {
-		log.Fatal("You must pass in a bytes.Buffer pointer to BulkExecute")
+		c.log.Fatal("You must pass in a bytes.Buffer pointer to BulkExecute")
 	}
 	dataChan := make(chan []byte, 1)
 	dataChan <- data.Bytes()
@@ -79,7 +79,7 @@ func (c *Conn) BulkSelect(schema, table string, data *bytes.Buffer) (err error) 
 
 func (c *Conn) BulkQuery(sql string, data *bytes.Buffer) error {
 	if data == nil {
-		log.Fatal("You must pass in a bytes.Buffer pointer to BulkQuery")
+		c.log.Fatal("You must pass in a bytes.Buffer pointer to BulkQuery")
 	}
 	dataChan := make(chan []byte, 1)
 	go func() {
@@ -98,7 +98,7 @@ func (c *Conn) StreamInsert(schema, table string, data <-chan []byte) (err error
 
 func (c *Conn) StreamExecute(origSQL string, data <-chan []byte) error {
 	if data == nil {
-		log.Fatal("You must pass in a []byte chan to StreamExecute")
+		c.log.Fatal("You must pass in a []byte chan to StreamExecute")
 	}
 
 	sentData := false
@@ -115,7 +115,7 @@ func (c *Conn) StreamExecute(origSQL string, data <-chan []byte) error {
 			c.error("Retrying...")
 		}
 
-		proxy, err := NewProxy(c.Conf.Host, c.Conf.Port)
+		proxy, err := NewProxy(c.Conf.Host, c.Conf.Port, c.log)
 		if err != nil {
 			c.error(err)
 			lastErr = err
@@ -130,7 +130,7 @@ func (c *Conn) StreamExecute(origSQL string, data <-chan []byte) error {
 			Command: "execute",
 			SQLtext: sql,
 		}
-		log.Info("EXA: Execute Import: ", sql)
+		c.log.Info("EXA: Execute Import: ", sql)
 		response, err := c.asyncSend(req)
 		if err != nil {
 			c.error("Unable to import bulk import data:", sql, err)
@@ -169,7 +169,7 @@ func (c *Conn) StreamSelect(schema, table string, data chan<- []byte) (int64, er
 
 func (c *Conn) StreamQuery(origSQL string, data chan<- []byte) (int64, error) {
 	if data == nil {
-		log.Fatal("You must pass in a []byte chan to StreamQuery")
+		c.log.Fatal("You must pass in a []byte chan to StreamQuery")
 	}
 
 	var bytesRead int64
@@ -180,7 +180,7 @@ func (c *Conn) StreamQuery(origSQL string, data chan<- []byte) (int64, error) {
 			c.error("Retrying...")
 		}
 
-		proxy, err := NewProxy(c.Conf.Host, c.Conf.Port)
+		proxy, err := NewProxy(c.Conf.Host, c.Conf.Port, c.log)
 		if err != nil {
 			c.error(err)
 			lastErr = err
@@ -195,7 +195,7 @@ func (c *Conn) StreamQuery(origSQL string, data chan<- []byte) (int64, error) {
 			Command: "execute",
 			SQLtext: sql,
 		}
-		log.Info("EXA: Execute Execute: ", sql)
+		c.log.Info("EXA: Execute Execute: ", sql)
 		response, err := c.asyncSend(req)
 		if err != nil {
 			c.error("Unable to bulk export data:", sql, err)

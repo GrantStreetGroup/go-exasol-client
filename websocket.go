@@ -20,20 +20,28 @@ import (
 	"github.com/gorilla/websocket"
 )
 
+var (
+	defaultDialer = *websocket.DefaultDialer
+)
+
+func init() {
+	defaultDialer.Proxy = nil // TODO use proxy env
+	defaultDialer.EnableCompression = false
+}
+
 func (c *Conn) wsConnect() {
 	uri := fmt.Sprintf("%s:%d", c.Conf.Host, c.Conf.Port)
 	u := url.URL{
 		Scheme: "ws",
 		Host:   uri,
 	}
-	log.Debugf("EXA: connecting to %s", u.String())
-	dialer := websocket.DefaultDialer
-	dialer.Proxy = nil // TODO use proxy env
-	dialer.EnableCompression = false
-	ws, resp, err := dialer.Dial(u.String(), nil)
+	c.log.Debugf("EXA: connecting to %s", u.String())
+	// According to documentation:
+	// > It is safe to call Dialer's methods concurrently.
+	ws, resp, err := defaultDialer.Dial(u.String(), nil)
 	if err != nil {
-		log.Debugf("resp:%s", resp)
-		log.Fatal("dial:", err)
+		c.log.Debugf("resp:%s", resp)
+		c.log.Fatal("dial:", err)
 	}
 	c.ws = ws
 }
@@ -59,7 +67,7 @@ func (c *Conn) asyncSend(request interface{}) (func() (map[string]interface{}, e
 		err = c.ws.ReadJSON(&response)
 
 		if err != nil {
-			log.Panicf("Error recving: %s", err)
+			c.log.Panicf("Error recving: %s", err)
 		} else if response["status"] != "ok" {
 			exception := response["exception"].(map[string]interface{})
 			err = errors.New(exception["text"].(string))
