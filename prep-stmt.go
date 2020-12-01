@@ -59,9 +59,11 @@ func (c *Conn) getPrepStmt(schema, sql string) (*prepStmt, error) {
 		if err != nil {
 			return nil, err
 		}
-		psc[sql] = ps
-		c.Stats["StmtCacheLen"] = len(psc)
-		c.Stats["StmtCacheMiss"]++
+		if c.Conf.CachePrepStmts {
+			psc[sql] = ps
+			c.Stats["StmtCacheLen"] = len(psc)
+			c.Stats["StmtCacheMiss"]++
+		}
 	}
 	ps.lastUsed = time.Now()
 

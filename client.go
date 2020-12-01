@@ -52,6 +52,7 @@ type ConnConf struct {
 	SuppressError bool   // Server errors are logged to Error by default
 	// TODO try compressionEnabled: true
 	LogLevel string
+	CachePrepStmts bool
 }
 
 type Conn struct {
@@ -218,6 +219,9 @@ func (c *Conn) Execute(sql string, args ...interface{}) (map[string]interface{},
 		c.log.Warning("Retrying with:", ps.sth)
 		execReq.StatementHandle = int(ps.sth)
 		res, err = c.send(execReq)
+	}
+	if !c.Conf.CachePrepStmts {
+		c.closePrepStmt(ps.sth)
 	}
 
 	return res, err
