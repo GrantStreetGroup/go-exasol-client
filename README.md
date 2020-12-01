@@ -92,7 +92,6 @@ func main() {
   - Add support for cluster node IP address ranges
   - Add support encryption and compression
   - Implement timeouts for all query types
-  - Add tests
 
 # Author
 
