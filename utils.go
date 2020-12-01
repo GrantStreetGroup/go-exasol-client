@@ -31,15 +31,21 @@ var keywords map[string]bool
 /*--- Public Interface ---*/
 
 func (c *Conn) QuoteIdent(ident string) string {
+	if regexp.MustCompile(`^\[`).MatchString(ident) {
+		// Return if already quoted
+		return ident
+	}
+
 	if keywords == nil {
 		keywordLock.Lock()
 		if keywords == nil {
-			keywords = map[string]bool{}
+			kw := map[string]bool{}
 			sql := "SELECT LOWER(keyword) FROM sys.exa_sql_keywords WHERE reserved"
 			kwRes, _ := c.FetchChan(sql)
 			for col := range kwRes {
-				keywords[col[0].(string)] = true
+				kw[col[0].(string)] = true
 			}
+			keywords = kw
 		}
 		keywordLock.Unlock()
 	}
