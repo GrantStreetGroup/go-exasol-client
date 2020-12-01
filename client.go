@@ -33,6 +33,7 @@ import (
 	"regexp"
 	"runtime"
 	"strconv"
+	"sync"
 
 	"github.com/gorilla/websocket"
 	"github.com/op/go-logging"
@@ -60,6 +61,7 @@ type Conn struct {
 	log           *logging.Logger
 	ws            *websocket.Conn
 	prepStmtCache map[string]*prepStmt
+	mux           sync.Mutex
 }
 
 type DataType struct {
@@ -291,6 +293,11 @@ func (c *Conn) FetchSlice(sql string, args ...interface{}) (res [][]interface{},
 	}
 	return
 }
+
+// Gets a sync.Mutext lock on the handle.
+// Allows coordinating use of the handle across multiple Go routines
+func (c *Conn) Lock()   { c.mux.Lock() }
+func (c *Conn) Unlock() { c.mux.Unlock() }
 
 /*--- Private Routines ---*/
 
