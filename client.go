@@ -27,6 +27,7 @@ import (
 	"crypto/rsa"
 	"encoding/base64"
 	"encoding/hex"
+	"fmt"
 	"math/big"
 	"os"
 	"os/user"
@@ -240,8 +241,9 @@ func (c *Conn) FetchChan(sql string, args ...interface{}) (<-chan []interface{},
 		c.log.Fatalf("Unexpected numResults: %s", response["numResults"].(float64))
 	}
 	results := response["results"].([]interface{})[0].(map[string]interface{})
-	// TODO die gracefully if there is no resultSet. This happens, for instance,
-	// if you try to fetch and insert statement
+	if results["resultSet"] == nil {
+		return nil, fmt.Errorf("Missing websocket API resultset")
+	}
 	rs := results["resultSet"].(map[string]interface{})
 
 	ch := make(chan []interface{}, 1000)
