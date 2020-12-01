@@ -87,6 +87,9 @@ func Connect(conf ConnConf) *Conn {
 	// Both of these are fatal if they encounter an error
 	c.wsConnect()
 	c.login()
+	if conf.Timeout > 0 {
+		c.SetTimeout(conf.Timeout)
+	}
 	return c
 }
 
@@ -310,6 +313,7 @@ func (c *Conn) Unlock() { c.mux.Unlock() }
 type attrJSON struct {
 	AutoCommit    bool   `json:"autocommit,omitempty"`
 	CurrentSchema string `json:"currentSchema,omitempty"`
+	QueryTimeout  uint32 `json:"queryTimeout,omitempty"`
 }
 
 type loginJSON struct {
@@ -431,4 +435,11 @@ func (c *Conn) login() {
 	c.SessionID = uint64(resp["sessionId"].(float64))
 	c.log.Notice("EXA: Connected SessionID:", c.SessionID)
 	c.ws.EnableWriteCompression(false)
+}
+
+func (c *Conn) SetTimeout(timeout uint32) {
+	c.send(&sendAttrJSON{
+		Command:    "setAttributes",
+		Attributes: attrJSON{QueryTimeout: timeout},
+	})
 }
