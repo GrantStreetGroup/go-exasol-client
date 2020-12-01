@@ -424,12 +424,30 @@ func (c *Conn) login() {
 		ClientOsUsername: osUser.Username,
 		Attributes:       attrJSON{AutoCommit: true}, // Default AutoCommit to on
 	}
-	resp, err := c.send(authReq)
+	_, err = c.send(authReq)
 	if err != nil {
-		c.log.Fatal("Unable authenticate with EXASOL: ", err)
+		c.log.Fatal("Unable authenticate with Exasol: ", err)
 	}
-	c.SessionID = uint64(resp["sessionId"].(float64))
-	c.log.Notice("EXA: Connected SessionID:", c.SessionID)
+
+	// Unfortunately the sessionID that is returned by the
+	// login request is sent as a 20 digit number which Go
+	// unmarshals into a float64 which when converted into
+	// an integer no longer exactly matches the original number.
+	// So we have to ask for the session separately
+	// TODO: We need a solution for this to avoid the extra query
+	resp, err := c.Execute("SELECT CURRENT_SESSION")
+	if err != nil {
+		c.log.Fatal("Unable fetch session from Exasol: ", err)
+	}
+	session, err := strconv.ParseUint(
+		resp["results"].([]interface{})[0].(map[string]interface{})["resultSet"].(map[string]interface{})["data"].([]interface{})[0].([]interface{})[0].(string),
+		10, 64,
+	)
+	if err != nil {
+		c.log.Fatal("Unable parse session from Exasol: ", err)
+	}
+	c.SessionID = session
+	c.log.Notice("Connected SessionID:", c.SessionID)
 	c.ws.EnableWriteCompression(false)
 }
 
