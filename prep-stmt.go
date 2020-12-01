@@ -50,7 +50,7 @@ func (c *Conn) getPrepStmt(schema, sql string) (*prepStmt, error) {
 	//      doesn't match the passed in data (i.e. placeholder/binds mismatch)
 	//      otherwise results in lowerlevel websocket closure
 
-	c.log.Info("EXA: Preparing stmt for:", sql)
+	c.log.Debug("Preparing stmt for:", sql)
 	psc := c.prepStmtCache
 	ps := psc[sql]
 	if ps == nil {
@@ -68,7 +68,7 @@ func (c *Conn) getPrepStmt(schema, sql string) (*prepStmt, error) {
 	ps.lastUsed = time.Now()
 
 	// Prune the prep stmt cache. I don't know how necessary it is
-	// but I saw something on their site about Exasol
+	// but I saw something on the site about Exasol
 	// being unhappy if there are thousands of open statements.
 	if len(psc) > 1000 {
 		sortedStmts := make([]string, len(psc))
@@ -102,12 +102,11 @@ func (c *Conn) createPrepStmt(schema string, sql string) (*prepStmt, error) {
 	sth := resp["statementHandle"].(float64)
 	paramData := resp["parameterData"].(map[string]interface{})
 	columnDefs := paramData["columns"].([]interface{})
-	c.log.Info("EXA: Got stmt handle ", sth)
 	return &prepStmt{sth, time.Now(), columnDefs}, nil
 }
 
 func (c *Conn) closePrepStmt(sth float64) {
-	c.log.Info("EXA: Closing stmt handle ", sth)
+	c.log.Debug("Closing stmt handle ", sth)
 	closeReq := &closePrepStmtJSON{
 		Command:         "closePreparedStatement",
 		StatementHandle: int(sth),

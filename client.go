@@ -1,5 +1,5 @@
 /*
-	This is a database interface library using EXASOL's websocket API
+	This is a database interface library using Exasol's websocket API
     https://github.com/exasol/websocket-api/blob/master/WebsocketAPI.md
 
 	TODOs:
@@ -51,7 +51,7 @@ type ConnConf struct {
 	Timeout       uint32 // In Seconds
 	SuppressError bool   // Server errors are logged to Error by default
 	// TODO try compressionEnabled: true
-	LogLevel string
+	LogLevel       string
 	CachePrepStmts bool
 }
 
@@ -94,28 +94,27 @@ func Connect(conf ConnConf) *Conn {
 }
 
 func (c *Conn) Disconnect() {
-	c.log.Notice("EXA: Disconnecting SessionID:", c.SessionID)
+	c.log.Notice("Disconnecting SessionID:", c.SessionID)
 
 	for _, ps := range c.prepStmtCache {
 		c.closePrepStmt(ps.sth)
 	}
 	_, err := c.send(&disconnectJSON{Command: "disconnect"})
 	if err != nil {
-		c.log.Warning("Unable to disconnect from EXASOL: ", err)
+		c.log.Warning("Unable to disconnect from Exasol: ", err)
 	}
 	c.ws.Close()
 	c.ws = nil
 }
 
 func (c *Conn) GetSessionAttr() (map[string]interface{}, error) {
-	c.log.Info("EXA: Getting Attr")
 	req := &sendAttrJSON{Command: "getAttributes"}
 	res, err := c.send(req)
 	return res, err
 }
 
 func (c *Conn) EnableAutoCommit() {
-	c.log.Info("EXA: Enabling AutoCommit")
+	c.log.Info("Enabling AutoCommit")
 	c.send(&sendAttrJSON{
 		Command:    "setAttributes",
 		Attributes: attrJSON{AutoCommit: true},
@@ -123,7 +122,7 @@ func (c *Conn) EnableAutoCommit() {
 }
 
 func (c *Conn) DisableAutoCommit() {
-	c.log.Info("EXA: Disabling AutoCommit")
+	c.log.Info("Disabling AutoCommit")
 	// We have to roll our own map because attrJSON
 	// needs to have AutoCommit set to omitempty which
 	// causes autocommit=false not to be sent :-(
@@ -136,13 +135,13 @@ func (c *Conn) DisableAutoCommit() {
 }
 
 func (c *Conn) Rollback() error {
-	c.log.Info("EXA: Rolling back transaction")
+	c.log.Info("Rolling back transaction")
 	_, err := c.Execute("ROLLBACK")
 	return err
 }
 
 func (c *Conn) Commit() error {
-	c.log.Info("EXA: Committing transaction")
+	c.log.Info("Committing transaction")
 	_, err := c.Execute("COMMIT")
 	return err
 }
@@ -171,7 +170,7 @@ func (c *Conn) Execute(sql string, args ...interface{}) (map[string]interface{},
 	// Just a simple execute (no prepare) if there are no binds
 	if binds == nil || len(binds) == 0 ||
 		binds[0] == nil || len(binds[0]) == 0 {
-		c.log.Info("EXA: Execute Query: ", sql)
+		c.log.Debug("Execute: ", sql)
 		req := &executeStmtJSON{
 			Command:    "execute",
 			Attributes: attrJSON{CurrentSchema: schema},
@@ -198,7 +197,7 @@ func (c *Conn) Execute(sql string, args ...interface{}) (map[string]interface{},
 	numCols := len(binds)
 	numRows := len(binds[0])
 
-	c.log.Infof("EXA: Executing %d x %d stmt", numCols, numRows)
+	c.log.Debugf("Executing %d x %d stmt", numCols, numRows)
 	execReq := &execPrepStmtJSON{
 		Command:         "executePreparedStatement",
 		StatementHandle: int(ps.sth),
@@ -377,8 +376,7 @@ func (c *Conn) initLogging(logLevelStr string) {
 		c.log.Fatal("Unrecognized log level", err)
 	}
 	logFormat := logging.MustStringFormatter(
-		"%{color}%{time:15:04:05.000} %{shortfunc}: " +
-			"%{level:.4s} %{id:03x}%{color:reset} %{message}",
+		"%{time:15:04:05.000} %{level:.4s} %{shortfunc}: %{message}",
 	)
 	backend := logging.NewLogBackend(os.Stderr, "[exasol]", 0)
 	formattedBackend := logging.NewBackendFormatter(backend, logFormat)
@@ -388,14 +386,13 @@ func (c *Conn) initLogging(logLevelStr string) {
 }
 
 func (c *Conn) login() {
-	c.log.Notice("EXA: Logging in")
 	loginReq := &loginJSON{
 		Command:         "login",
 		ProtocolVersion: 1,
 	}
 	res, err := c.send(loginReq) // TODO change req to pointer
 	if err != nil {
-		c.log.Fatal("Unable to login to EXASOL: ", err)
+		c.log.Fatal("Unable to login to Exasol: ", err)
 	}
 
 	pubKeyMod, _ := hex.DecodeString(res["publicKeyModulus"].(string))
@@ -417,7 +414,6 @@ func (c *Conn) login() {
 
 	osUser, _ := user.Current()
 
-	c.log.Notice("EXA: Authenticating")
 	authReq := &authJSON{
 		Username:         c.Conf.Username,
 		Password:         b64Pass,

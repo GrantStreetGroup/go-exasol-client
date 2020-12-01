@@ -35,7 +35,7 @@ func (c *Conn) wsConnect() {
 		Scheme: "ws",
 		Host:   uri,
 	}
-	c.log.Debugf("EXA: connecting to %s", u.String())
+	c.log.Debugf("Connecting to %s", u.String())
 	// According to documentation:
 	// > It is safe to call Dialer's methods concurrently.
 	ws, resp, err := defaultDialer.Dial(u.String(), nil)
@@ -57,7 +57,7 @@ func (c *Conn) send(request interface{}) (map[string]interface{}, error) {
 func (c *Conn) asyncSend(request interface{}) (func() (map[string]interface{}, error), error) {
 	err := c.ws.WriteJSON(request)
 	if err != nil {
-		c.error("Error sending:", err)
+		c.error("WebSocket API Error sending:", err)
 		return nil, err
 	}
 
@@ -67,7 +67,7 @@ func (c *Conn) asyncSend(request interface{}) (func() (map[string]interface{}, e
 		err = c.ws.ReadJSON(&response)
 
 		if err != nil {
-			c.log.Panicf("Error recving: %s", err)
+			c.error("WebSocket API Error recving:", err)
 		} else if response["status"] != "ok" {
 			exception := response["exception"].(map[string]interface{})
 			err = errors.New(exception["text"].(string))
