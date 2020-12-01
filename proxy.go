@@ -21,22 +21,25 @@ import (
 	"fmt"
 	"net"
 	"strconv"
+	"sync"
 
 	"github.com/op/go-logging"
 )
 
 type Proxy struct {
-	conn net.Conn
 	Host string
 	Port uint32
-	log  *logging.Logger
+
+	conn    net.Conn
+	running bool
+	pool    *sync.Pool
+	log     *logging.Logger
 }
 
-// NewProxy must never be used concurrently with the creating Conn.
-// Violating this rule will introduce data races into your program.
-func NewProxy(host string, port uint16, log *logging.Logger) (*Proxy, error) {
+func NewProxy(host string, port uint16, bufPool *sync.Pool, log *logging.Logger) (*Proxy, error) {
 	p := &Proxy{
-		log: log,
+		pool: bufPool,
+		log:  log,
 	}
 
 	var err error
@@ -45,8 +48,9 @@ func NewProxy(host string, port uint16, log *logging.Logger) (*Proxy, error) {
 	if err != nil {
 		return nil, fmt.Errorf("Unable to setup proxy (1): %s", err)
 	}
+	p.running = true
 
-	// This asks EXASOL to setup a proxy connected to this socket
+	// This asks Exasol to setup a proxy connected to this socket
 	req := make([]byte, 12)
 	binary.LittleEndian.PutUint32(req[0:], 0x02212102)
 	binary.LittleEndian.PutUint32(req[4:], 1)
@@ -56,7 +60,7 @@ func NewProxy(host string, port uint16, log *logging.Logger) (*Proxy, error) {
 		return nil, fmt.Errorf("Unable to setup proxy (2): %s", err)
 	}
 
-	// EXASOL replies with the internal host/port it's listening on
+	// Exasol replies with the internal host/port it's listening on
 	resp := make([]byte, 24)
 	_, err = p.conn.Read(resp)
 	if err != nil {
@@ -65,27 +69,26 @@ func NewProxy(host string, port uint16, log *logging.Logger) (*Proxy, error) {
 
 	p.Port = binary.LittleEndian.Uint32(resp[4:])
 	p.Host = string(bytes.Trim(resp[8:], "\x00")) // Remove nulls
-	p.log.Debugf("EXA: Proxy is %s:%d", p.Host, p.Port)
+	p.log.Debugf("Proxy is %s:%d", p.Host, p.Port)
 
 	return p, nil
 }
 
-func (p *Proxy) Read(data chan<- []byte) (int64, error) {
-	// Read (and ignore) headers
-	for {
-		line, err := p.readLine()
-		if err != nil {
-			return 0, fmt.Errorf("Unable to read from proxy(1): %s", err)
-		}
-		// blank line means end of headers
-		p.log.Debug("Got header:", string(line))
-		if len(line) == 0 {
-			break
-		}
+func (p *Proxy) Read(data chan<- []byte, stop <-chan bool) (int64, error) {
+	_, err := p.readHeaders()
+	if err != nil {
+		return 0, err
 	}
+
+	p.sendHeaders([]string{
+		"HTTP/1.1 100 Continue",
+		"Content-Length: 0",
+		"Connection: close",
+	})
 
 	// Read chunks
 	var totalRead int64
+DATA:
 	for {
 		chunkSize, err := p.readLine()
 		if err != nil {
@@ -96,7 +99,14 @@ func (p *Proxy) Read(data chan<- []byte) (int64, error) {
 		if err != nil {
 			return totalRead, fmt.Errorf("Unable to parse chunkSize %s: %s", chunkSize, err)
 		}
-		chunk := make([]byte, chunkLen)
+		chunk := p.pool.Get().([]byte)
+		if chunkLen > int64(cap(chunk)) {
+			p.log.Warningf("Proxy chunk len %d > buffer cap %d", chunkLen, cap(chunk))
+			chunk = make([]byte, chunkLen)
+		} else if chunkLen != int64(len(chunk)) {
+			chunk = chunk[:chunkLen]
+		}
+
 		readLen := 0
 		for {
 			l, err := p.conn.Read(chunk[readLen:])
@@ -124,28 +134,38 @@ func (p *Proxy) Read(data chan<- []byte) (int64, error) {
 		}
 
 		totalRead += chunkLen
-		data <- chunk
+		select {
+		case <-stop:
+			p.Shutdown()
+			break DATA
+		case data <- chunk:
+		}
 	}
 
 	return totalRead, nil
 }
 
-func (p *Proxy) Write(data <-chan []byte) (bool, error) {
-	err := p.sendHeaders([]string{
+func (p *Proxy) Write(data <-chan []byte) (bytesWritten int64, err error) {
+	_, err = p.readHeaders()
+	if err != nil {
+		return bytesWritten, err
+	}
+
+	err = p.sendHeaders([]string{
 		"HTTP/1.1 200 OK",
 		"Content-Type: application/octet-stream",
 		"Content-Disposition: attachment; filename=data.csv",
 		"Transfer-Encoding: chunked",
-		"Connection: Closed",
+		"Connection: close",
 	})
 
-	sentData := false
 	if err != nil {
 		err = fmt.Errorf("Unable to send headers to proxy: %s", err)
 	} else {
 		for b := range data {
-			sentData = true
-			chunkSize := strconv.FormatInt(int64(len(b)), 16)
+			l := int64(len(b))
+			bytesWritten += l
+			chunkSize := strconv.FormatInt(l, 16)
 			p.conn.Write([]byte(chunkSize))
 			p.conn.Write([]byte("\r\n"))
 			_, err = p.conn.Write(b)
@@ -157,11 +177,20 @@ func (p *Proxy) Write(data <-chan []byte) (bool, error) {
 		}
 		p.conn.Write([]byte("0\r\n\r\n")) // A final zero chunk
 	}
-	return sentData, err
+	return bytesWritten, err
 }
 
 func (p *Proxy) Shutdown() {
-	p.conn.Close()
+	if p.IsRunning() {
+		if p.conn != nil {
+			p.conn.Close()
+		}
+		p.running = false
+	}
+}
+
+func (p *Proxy) IsRunning() bool {
+	return p.running
 }
 
 /* Private routines */
@@ -199,4 +228,20 @@ func (p *Proxy) sendHeaders(headers []string) error {
 		}
 	}
 	return nil
+}
+
+func (p *Proxy) readHeaders() (headers []string, err error) {
+	for {
+		line, err := p.readLine()
+		if err != nil {
+			return headers, fmt.Errorf("Unable to read from proxy(1): %s", err)
+		}
+		p.log.Debug("Got header:", string(line))
+		// Blank line means end of headers
+		if len(line) == 0 {
+			break
+		}
+		headers = append(headers, string(line))
+	}
+	return headers, nil
 }

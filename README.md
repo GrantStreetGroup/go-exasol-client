@@ -74,13 +74,11 @@ func main() {
     err := conn.StreamInsert(schemaName, tableName, csvChan)
 
 
-    go func {
-        // Read your CSV data in ~8K chunks
-        for chunk := range csvChan {
-            // chunk is a []byte with partial csvData
-        }
+    res := conn.StreamSelect(schemaName, tableName) // Returns immediately
+    // Read your CSV data in ~8K chunks
+    for chunk := range res.Data {
+        // chunk is a []byte with partial CSV data
     }
-    bytesRead, err := conn.StreamSelect(schemaName, tableName, csvChan)
 
 
     conn.Commit()

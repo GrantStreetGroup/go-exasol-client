@@ -54,11 +54,13 @@ package exasol
 import (
 	"bytes"
 	"fmt"
+	"regexp"
+	"sync"
 	"time"
 )
 
 func (c *Conn) BulkInsert(schema, table string, data *bytes.Buffer) (err error) {
-	sql := getTableImportSQL(schema, table)
+	sql := c.getTableImportSQL(schema, table)
 	return c.BulkExecute(sql, data)
 }
 
@@ -73,7 +75,7 @@ func (c *Conn) BulkExecute(sql string, data *bytes.Buffer) error {
 }
 
 func (c *Conn) BulkSelect(schema, table string, data *bytes.Buffer) (err error) {
-	sql := getTableExportSQL(schema, table)
+	sql := c.getTableExportSQL(schema, table)
 	return c.BulkQuery(sql, data)
 }
 
@@ -81,18 +83,18 @@ func (c *Conn) BulkQuery(sql string, data *bytes.Buffer) error {
 	if data == nil {
 		c.log.Fatal("You must pass in a bytes.Buffer pointer to BulkQuery")
 	}
-	dataChan := make(chan []byte, 1)
-	go func() {
-		for b := range dataChan {
-			data.Write(b)
-		}
-	}()
-	_, err := c.StreamQuery(sql, dataChan)
-	return err
+	rows := c.StreamQuery(sql)
+	for b := range rows.Data {
+		data.Write(b)
+	}
+	if rows.Error != nil {
+		return fmt.Errorf("Unable to BulkQuery: %s", rows.Error)
+	}
+	return nil
 }
 
 func (c *Conn) StreamInsert(schema, table string, data <-chan []byte) (err error) {
-	sql := getTableImportSQL(schema, table)
+	sql := c.getTableImportSQL(schema, table)
 	return c.StreamExecute(sql, data)
 }
 
@@ -101,156 +103,228 @@ func (c *Conn) StreamExecute(origSQL string, data <-chan []byte) error {
 		c.log.Fatal("You must pass in a []byte chan to StreamExecute")
 	}
 
-	sentData := false
-	var lastErr error
 	// Retry twice cuz it seems we sometimes get sentient errors
-	for i := range []int{1, 2} {
-		if i > 0 {
-			// If there was an error while writing the data
-			// we've lost the data we've written so we can't retry
-			if sentData {
+	for range []int{1, 2} {
+		bytesWritten, err := c.streamExecuteNoRetry(origSQL, data)
+		if err != nil {
+			if retryableError(err) {
+				if bytesWritten == 0 {
+					c.error("Retrying...")
+					continue
+				}
+				// If there was an error while writing the data
+				// we've lost the data we've written so we can't retry
 				c.error("Data already sent can't retry...")
-				break
 			}
-			c.error("Retrying...")
-		}
-
-		proxy, err := NewProxy(c.Conf.Host, c.Conf.Port, c.log)
-		if err != nil {
 			c.error(err)
-			lastErr = err
-			continue
+			return err
 		}
-		defer proxy.Shutdown()
-
-		proxyURL := fmt.Sprintf("http://%s:%d", proxy.Host, proxy.Port)
-		sql := fmt.Sprintf(origSQL, proxyURL)
-
-		req := &executeStmtJSON{
-			Command: "execute",
-			SQLtext: sql,
-		}
-		c.log.Info("EXA: Execute Import: ", sql)
-		response, err := c.asyncSend(req)
-		if err != nil {
-			c.error("Unable to import bulk import data:", sql, err)
-			lastErr = err
-			continue
-		}
-
-		// This needs some sort of timeout because if the
-		// SQL has an error the write call will just hang
-		// because nothing is listening to it on the other end.
-		// In that case the response() call below will return an error.
-		// See the corresponding timeout in StreamQuery
-		var uploadErr error
-		sentData, uploadErr = proxy.Write(data)
-
-		_, err = response()
-		if err != nil || uploadErr != nil {
-			c.error("Unable to import bulk import data:", sql, err, uploadErr)
-			lastErr = err
-			if err == nil {
-				lastErr = uploadErr
-			}
-			continue // Retry
-		} else {
-			lastErr = nil
-			break
-		}
+		break
 	}
-	return lastErr
+	return nil
 }
 
-func (c *Conn) StreamSelect(schema, table string, data chan<- []byte) (int64, error) {
-	sql := getTableExportSQL(schema, table)
-	return c.StreamQuery(sql, data)
+type Rows struct {
+	BytesRead int64
+	Data      chan []byte
+	Pool      *sync.Pool // Use this to return the []bytes
+	Error     error
+
+	conn  *Conn
+	proxy *Proxy
+	stop  chan bool
+	wg    sync.WaitGroup
 }
 
-func (c *Conn) StreamQuery(origSQL string, data chan<- []byte) (int64, error) {
-	if data == nil {
-		c.log.Fatal("You must pass in a []byte chan to StreamQuery")
-	}
-
-	var bytesRead int64
-	var lastErr error
-	// Retry twice cuz it seems we sometimes get sentient errors
-	for i := range []int{1, 2} {
-		if i > 0 {
-			c.error("Retrying...")
-		}
-
-		proxy, err := NewProxy(c.Conf.Host, c.Conf.Port, c.log)
-		if err != nil {
-			c.error(err)
-			lastErr = err
-			continue
-		}
-		defer proxy.Shutdown()
-
-		proxyURL := fmt.Sprintf("http://%s:%d", proxy.Host, proxy.Port)
-		sql := fmt.Sprintf(origSQL, proxyURL)
-
-		req := &executeStmtJSON{
-			Command: "execute",
-			SQLtext: sql,
-		}
-		c.log.Info("EXA: Execute Execute: ", sql)
-		response, err := c.asyncSend(req)
-		if err != nil {
-			c.error("Unable to bulk export data:", sql, err)
-			lastErr = err
-			continue
-		}
-
-		d := make(chan error, 1)
-		r := make(chan error, 1)
-		go func() {
-			bytesRead, err = proxy.Read(data)
-			d <- err
-		}()
-		go func() {
-			_, err := response()
-			r <- err
-		}()
-
+func (r *Rows) Close() {
+	origCfg := r.conn.Conf.SuppressError
+	if r.proxy.IsRunning() {
+		// Suppress errors from forcing it to stop
+		r.conn.Conf.SuppressError = true
 		select {
-		case err = <-d:
-			if err == nil {
-				err = <-r
-			}
-		case err = <-r:
-			if err == nil {
-				err = <-d
-			}
-		case <-time.After(time.Duration(c.Conf.Timeout) * time.Second):
-			err = fmt.Errorf("Timed out doing BulkQuery")
-		}
-
-		if err != nil {
-			c.error("Unable to bulk export data:", sql, err)
-			lastErr = err
-			continue // Retry
-		} else {
-			lastErr = nil
-			break
+		case r.stop <- true:
+		default:
 		}
 	}
-	return bytesRead, lastErr
+	r.wg.Wait()
+	r.conn.Conf.SuppressError = origCfg
+}
+
+func (c *Conn) StreamSelect(schema, table string) *Rows {
+	sql := c.getTableExportSQL(schema, table)
+	return c.StreamQuery(sql)
+}
+
+var bufPool = sync.Pool{
+	New: func() interface{} {
+		return make([]byte, 65524, 65524)
+	},
+}
+
+func (c *Conn) StreamQuery(exportSQL string) *Rows {
+	r := &Rows{
+		Data: make(chan []byte, 1),
+		Pool: &bufPool,
+		conn: c,
+		stop: make(chan bool, 1),
+		wg:   sync.WaitGroup{},
+	}
+
+	// Asynchronously read in the data from Exasol
+	r.wg.Add(1)
+	go func() {
+		defer func() {
+			close(r.Data)
+			r.wg.Done()
+		}()
+
+		// Retry once because for some reason we occasionally get "connection refused"
+		// errors when Exasol tries to connect to the internal proxy that it set up.
+		for i := 0; i <= 2; i++ {
+			r.Error = r.streamQuery(exportSQL)
+			if retryableError(r.Error) {
+				c.error("Retrying...")
+				r.Error = nil
+				continue
+			}
+			return
+		}
+	}()
+
+	return r
 }
 
 /*--- Private Routines ---*/
 
-func getTableImportSQL(schema, table string) string {
+func (r *Rows) streamQuery(exportSQL string) error {
+	proxy, resp, err := r.conn.initProxy(exportSQL)
+	if err != nil {
+		return err
+	}
+	r.proxy = proxy
+	defer r.proxy.Shutdown()
+
+	dataErr := make(chan error, 1)
+	respErr := make(chan error, 1)
+	go func() {
+		// This is a blocking reader of the CSV data
+		r.BytesRead, err = r.proxy.Read(r.Data, r.stop)
+		dataErr <- err
+	}()
+	go func() {
+		// This returns the result of the EXPORT query
+		_, err := resp()
+		respErr <- err
+	}()
+
+	select {
+	case err = <-dataErr:
+		if err == nil {
+			err = <-respErr
+		}
+	case err = <-respErr:
+		if err == nil {
+			err = <-dataErr
+		}
+	case <-time.After(time.Duration(r.conn.Conf.Timeout) * time.Second):
+		err = fmt.Errorf("Timed out doing BulkQuery")
+	}
+
+	// If we purposefully prematurely closed the connection
+	// we don't want to raise any errors.
+	if err != nil {
+		r.conn.error("Unable to bulk export data:", exportSQL, err)
+	}
+
+	return err
+}
+
+func (c *Conn) streamExecuteNoRetry(origSQL string, data <-chan []byte) (
+	bytesWritten int64, err error,
+) {
+	proxy, resp, err := c.initProxy(origSQL)
+	if err != nil {
+		return 0, err
+	}
+	defer proxy.Shutdown()
+
+	dataErr := make(chan error, 1)
+	respErr := make(chan error, 1)
+	go func() {
+		// This is a blocking writer of the CSV data
+		bytesWritten, err = proxy.Write(data)
+		dataErr <- err
+	}()
+	go func() {
+		// This returns the result of the IMPORT query
+		_, err := resp()
+		respErr <- err
+	}()
+
+	select {
+	case err = <-dataErr:
+		if err == nil {
+			err = <-respErr
+		}
+	case err = <-respErr:
+		if err == nil {
+			err = <-dataErr
+		}
+	case <-time.After(time.Duration(c.Conf.Timeout) * time.Second):
+		err = fmt.Errorf("Timed out doing StreamExecute")
+	}
+
+	if err != nil {
+		err = fmt.Errorf("Unable to bulk import data: %s\n%s", origSQL, err)
+	}
+
+	return bytesWritten, err
+}
+
+func (c *Conn) initProxy(sql string) (*Proxy, func() (map[string]interface{}, error), error) {
+	proxy, err := NewProxy(c.Conf.Host, c.Conf.Port, &bufPool, c.log)
+	if err != nil {
+		c.error(err)
+		return nil, nil, err
+	}
+
+	proxyURL := fmt.Sprintf("http://%s:%d", proxy.Host, proxy.Port)
+	sql = fmt.Sprintf(sql, proxyURL)
+
+	req := &executeStmtJSON{
+		Command: "execute",
+		SQLtext: sql,
+	}
+	c.log.Debug("Stream sql: ", sql)
+	response, err := c.asyncSend(req)
+	if err != nil {
+		c.error("Unable to stream sql:", sql, err)
+		proxy.Shutdown()
+		return nil, nil, err
+	}
+
+	return proxy, response, nil
+}
+
+func retryableError(err error) bool {
+	retryableError := regexp.MustCompile(`failed after 0 bytes.+Connection refused`)
+	if err != nil &&
+		retryableError.MatchString(err.Error()) {
+		return true
+	}
+	return false
+}
+
+func (c *Conn) getTableImportSQL(schema, table string) string {
 	return fmt.Sprintf(
 		"IMPORT INTO %s.%s FROM CSV AT '%%s' FILE 'data.csv'",
-		schema, table,
+		c.QuoteIdent(schema), c.QuoteIdent(table),
 	)
 }
 
-func getTableExportSQL(schema, table string) string {
+func (c *Conn) getTableExportSQL(schema, table string) string {
 	return fmt.Sprintf(
 		"EXPORT %s.%s INTO CSV AT '%%s' FILE 'data.csv'",
-		schema, table,
+		c.QuoteIdent(schema), c.QuoteIdent(table),
 	)
 }
