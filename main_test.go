@@ -13,8 +13,10 @@ package exasol
 
 import (
 	"flag"
-	"github.com/stretchr/testify/suite"
 	"testing"
+
+	"github.com/sirupsen/logrus"
+	"github.com/stretchr/testify/suite"
 )
 
 var testHost = flag.String("host", "127.0.0.1", "Exasol hostname")
@@ -49,7 +51,7 @@ func (s *testSuite) connectExasol() {
 		Port:     uint16(*testPort),
 		Username: "SYS",
 		Password: *testPass,
-		LogLevel: s.loglevel,
+		Logger:   customTestLogger(s.loglevel),
 		Timeout:  10,
 	})
 }
@@ -82,4 +84,10 @@ func (s *testSuite) fetch(sql string) [][]interface{} {
 		s.NoError(err, "Unable to execute SQL")
 	}
 	return data
+}
+
+func customTestLogger(logLevelStr string) *logrus.Entry {
+	l, _ := logrus.ParseLevel(logLevelStr)
+	logrus.SetLevel(l)
+	return logrus.WithFields(logrus.Fields{"test": "123"})
 }

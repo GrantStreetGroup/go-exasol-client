@@ -22,8 +22,6 @@ import (
 	"net"
 	"strconv"
 	"sync"
-
-	"github.com/op/go-logging"
 )
 
 type Proxy struct {
@@ -33,10 +31,10 @@ type Proxy struct {
 	conn    net.Conn
 	running bool
 	pool    *sync.Pool
-	log     *logging.Logger
+	log     Logger
 }
 
-func NewProxy(host string, port uint16, bufPool *sync.Pool, log *logging.Logger) (*Proxy, error) {
+func NewProxy(host string, port uint16, bufPool *sync.Pool, log Logger) (*Proxy, error) {
 	p := &Proxy{
 		pool: bufPool,
 		log:  log,

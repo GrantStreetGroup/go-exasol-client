@@ -15,14 +15,10 @@
 package exasol
 
 import (
-	"encoding/json"
 	"fmt"
 	"regexp"
 	"strings"
 	"sync"
-
-	"github.com/davecgh/go-spew/spew"
-	"github.com/op/go-logging"
 )
 
 var keywordLock sync.RWMutex
@@ -95,19 +91,4 @@ func transposeToChan(ch chan<- []interface{}, matrix []interface{}) {
 		}
 		ch <- ret
 	}
-}
-
-// For debugging
-func warnJson(l *logging.Logger, msg interface{}) {
-	json, _ := json.Marshal(msg)
-	l.Errorf("WARNING: %s", json)
-}
-
-func dieJson(l *logging.Logger, msg interface{}) {
-	json, _ := json.Marshal(msg)
-	l.Panicf("DIEING: %s", json)
-}
-
-func dump(i interface{}) {
-	spew.Dump(i)
 }

@@ -29,7 +29,6 @@ import (
 	"encoding/hex"
 	"fmt"
 	"math/big"
-	"os"
 	"os/user"
 	"regexp"
 	"runtime"
@@ -37,7 +36,6 @@ import (
 	"sync"
 
 	"github.com/gorilla/websocket"
-	"github.com/op/go-logging"
 )
 
 /*--- Public Interface ---*/
@@ -51,7 +49,7 @@ type ConnConf struct {
 	Timeout       uint32 // In Seconds
 	SuppressError bool   // Server errors are logged to Error by default
 	// TODO try compressionEnabled: true
-	LogLevel       string
+	Logger         Logger // Optional for better control over logging
 	CachePrepStmts bool
 }
 
@@ -60,7 +58,7 @@ type Conn struct {
 	SessionID uint64
 	Stats     map[string]int
 
-	log           *logging.Logger
+	log           Logger
 	ws            *websocket.Conn
 	prepStmtCache map[string]*prepStmt
 	mux           sync.Mutex
@@ -79,10 +77,13 @@ func Connect(conf ConnConf) *Conn {
 	c := &Conn{
 		Conf:          conf,
 		Stats:         map[string]int{},
-		log:           logging.MustGetLogger("exasol"),
+		log:           conf.Logger,
 		prepStmtCache: map[string]*prepStmt{},
 	}
-	c.initLogging(conf.LogLevel)
+
+	if c.log == nil {
+		c.log = newDefaultLogger()
+	}
 
 	// Both of these are fatal if they encounter an error
 	c.wsConnect()
@@ -94,7 +95,7 @@ func Connect(conf ConnConf) *Conn {
 }
 
 func (c *Conn) Disconnect() {
-	c.log.Notice("Disconnecting SessionID:", c.SessionID)
+	c.log.Info("Disconnecting SessionID:", c.SessionID)
 
 	for _, ps := range c.prepStmtCache {
 		c.closePrepStmt(ps.sth)
@@ -267,7 +268,7 @@ func (c *Conn) FetchChan(sql string, args ...interface{}) (<-chan []interface{},
 				}
 				chunk, err := c.send(fetchReq)
 				if err != nil {
-					c.log.Panic(err)
+					panic(err) // TODO Return an error instead
 				}
 				i += chunk["numRows"].(float64)
 				transposeToChan(ch, chunk["data"].([]interface{}))
@@ -367,24 +368,6 @@ type closeResultSetJSON struct {
 	ResultSetHandles []float64 `json:"resultSetHandles"`
 }
 
-func (c *Conn) initLogging(logLevelStr string) {
-	if logLevelStr == "" {
-		logLevelStr = "error"
-	}
-	logLevel, err := logging.LogLevel(logLevelStr)
-	if err != nil {
-		c.log.Fatal("Unrecognized log level", err)
-	}
-	logFormat := logging.MustStringFormatter(
-		"%{time:15:04:05.000} %{level:.4s} %{shortfunc}: %{message}",
-	)
-	backend := logging.NewLogBackend(os.Stderr, "[exasol]", 0)
-	formattedBackend := logging.NewBackendFormatter(backend, logFormat)
-	leveledBackend := logging.AddModuleLevel(formattedBackend)
-	leveledBackend.SetLevel(logLevel, "exasol")
-	c.log.SetBackend(leveledBackend)
-}
-
 func (c *Conn) login() {
 	loginReq := &loginJSON{
 		Command:         "login",
@@ -447,7 +430,7 @@ func (c *Conn) login() {
 		c.log.Fatal("Unable parse session from Exasol: ", err)
 	}
 	c.SessionID = session
-	c.log.Notice("Connected SessionID:", c.SessionID)
+	c.log.Info("Connected SessionID:", c.SessionID)
 	c.ws.EnableWriteCompression(false)
 }
 
