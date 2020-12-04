@@ -76,10 +76,12 @@ func Transpose(matrix [][]interface{}) [][]interface{} {
 
 /*--- Private Routines ---*/
 
-func (c *Conn) error(args ...interface{}) {
+func (c *Conn) error(str string, args ...interface{}) error {
+	err := fmt.Errorf(str, args...)
 	if c.Conf.SuppressError == false {
-		c.log.Error(args...)
+		c.log.Error(err)
 	}
+	return err
 }
 
 func transposeToChan(ch chan<- []interface{}, matrix []interface{}) {

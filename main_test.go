@@ -46,7 +46,8 @@ func initTestSuite() *testSuite {
 }
 
 func (s *testSuite) connectExasol() {
-	s.exaConn = Connect(ConnConf{
+	var err error
+	s.exaConn, err = Connect(ConnConf{
 		Host:     *testHost,
 		Port:     uint16(*testPort),
 		Username: "SYS",
@@ -54,6 +55,9 @@ func (s *testSuite) connectExasol() {
 		Logger:   customTestLogger(s.loglevel),
 		Timeout:  10,
 	})
+	if err != nil {
+		logrus.Fatalf("Unable to connect to Exasol: %s", err)
+	}
 }
 
 func (s *testSuite) SetupTest() {

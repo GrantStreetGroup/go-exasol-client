@@ -29,7 +29,7 @@ func init() {
 	defaultDialer.EnableCompression = false
 }
 
-func (c *Conn) wsConnect() {
+func (c *Conn) wsConnect() error {
 	uri := fmt.Sprintf("%s:%d", c.Conf.Host, c.Conf.Port)
 	u := url.URL{
 		Scheme: "ws",
@@ -41,9 +41,10 @@ func (c *Conn) wsConnect() {
 	ws, resp, err := defaultDialer.Dial(u.String(), nil)
 	if err != nil {
 		c.log.Debugf("resp:%s", resp)
-		c.log.Fatal("dial:", err)
+		return err
 	}
 	c.ws = ws
+	return nil
 }
 
 func (c *Conn) send(request interface{}) (map[string]interface{}, error) {
@@ -57,8 +58,7 @@ func (c *Conn) send(request interface{}) (map[string]interface{}, error) {
 func (c *Conn) asyncSend(request interface{}) (func() (map[string]interface{}, error), error) {
 	err := c.ws.WriteJSON(request)
 	if err != nil {
-		c.error("WebSocket API Error sending:", err)
-		return nil, err
+		return nil, c.error("WebSocket API Error sending: %s", err)
 	}
 
 	return func() (map[string]interface{}, error) {
@@ -67,11 +67,11 @@ func (c *Conn) asyncSend(request interface{}) (func() (map[string]interface{}, e
 		err = c.ws.ReadJSON(&response)
 
 		if err != nil {
-			c.error("WebSocket API Error recving:", err)
+			c.error("WebSocket API Error recving: %s", err)
 		} else if response["status"] != "ok" {
 			exception := response["exception"].(map[string]interface{})
 			err = errors.New(exception["text"].(string))
-			c.error("Server Error:", err)
+			c.error("Server Error: %s", err)
 		} else if respData, ok := response["responseData"]; ok {
 			result = respData.(map[string]interface{})
 		} else if attr, ok := response["attributes"]; ok {

@@ -53,6 +53,7 @@ package exasol
 
 import (
 	"bytes"
+	"errors"
 	"fmt"
 	"regexp"
 	"sync"
@@ -66,7 +67,7 @@ func (c *Conn) BulkInsert(schema, table string, data *bytes.Buffer) (err error) 
 
 func (c *Conn) BulkExecute(sql string, data *bytes.Buffer) error {
 	if data == nil {
-		c.log.Fatal("You must pass in a bytes.Buffer pointer to BulkExecute")
+		return fmt.Errorf("You must pass in a bytes.Buffer pointer to BulkExecute")
 	}
 	dataChan := make(chan []byte, 1)
 	dataChan <- data.Bytes()
@@ -81,7 +82,7 @@ func (c *Conn) BulkSelect(schema, table string, data *bytes.Buffer) (err error) 
 
 func (c *Conn) BulkQuery(sql string, data *bytes.Buffer) error {
 	if data == nil {
-		c.log.Fatal("You must pass in a bytes.Buffer pointer to BulkQuery")
+		return fmt.Errorf("You must pass in a bytes.Buffer pointer to BulkQuery")
 	}
 	rows := c.StreamQuery(sql)
 	for b := range rows.Data {
@@ -100,7 +101,7 @@ func (c *Conn) StreamInsert(schema, table string, data <-chan []byte) (err error
 
 func (c *Conn) StreamExecute(origSQL string, data <-chan []byte) error {
 	if data == nil {
-		c.log.Fatal("You must pass in a []byte chan to StreamExecute")
+		return fmt.Errorf("You must pass in a []byte chan to StreamExecute")
 	}
 
 	// Retry twice cuz it seems we sometimes get sentient errors
@@ -116,7 +117,7 @@ func (c *Conn) StreamExecute(origSQL string, data <-chan []byte) error {
 				// we've lost the data we've written so we can't retry
 				c.error("Data already sent can't retry...")
 			}
-			c.error(err)
+			c.error(err.Error())
 			return err
 		}
 		break
@@ -227,13 +228,13 @@ func (r *Rows) streamQuery(exportSQL string) error {
 			err = <-dataErr
 		}
 	case <-time.After(time.Duration(r.conn.Conf.Timeout) * time.Second):
-		err = fmt.Errorf("Timed out doing BulkQuery")
+		err = errors.New("Timed out doing BulkQuery")
 	}
 
 	// If we purposefully prematurely closed the connection
 	// we don't want to raise any errors.
 	if err != nil {
-		r.conn.error("Unable to bulk export data:", exportSQL, err)
+		r.conn.error("Unable to bulk export data: %s %s", exportSQL, err)
 	}
 
 	return err
@@ -284,7 +285,7 @@ func (c *Conn) streamExecuteNoRetry(origSQL string, data <-chan []byte) (
 func (c *Conn) initProxy(sql string) (*Proxy, func() (map[string]interface{}, error), error) {
 	proxy, err := NewProxy(c.Conf.Host, c.Conf.Port, &bufPool, c.log)
 	if err != nil {
-		c.error(err)
+		c.error(err.Error())
 		return nil, nil, err
 	}
 
@@ -298,7 +299,7 @@ func (c *Conn) initProxy(sql string) (*Proxy, func() (map[string]interface{}, er
 	c.log.Debug("Stream sql: ", sql)
 	response, err := c.asyncSend(req)
 	if err != nil {
-		c.error("Unable to stream sql:", sql, err)
+		c.error("Unable to stream sql: %s %s", sql, err)
 		proxy.Shutdown()
 		return nil, nil, err
 	}

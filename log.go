@@ -21,9 +21,6 @@ type Logger interface {
 
 	Error(...interface{})
 	Errorf(string, ...interface{})
-
-	Fatal(...interface{})
-	Fatalf(string, ...interface{})
 }
 
 type defLogger struct {
@@ -45,6 +42,3 @@ func (l *defLogger) Warningf(str string, args ...interface{}) { l.logger.Printf(
 
 func (l *defLogger) Error(args ...interface{})              { l.logger.Print(args...) }
 func (l *defLogger) Errorf(str string, args ...interface{}) { l.logger.Printf(str, args...) }
-
-func (l *defLogger) Fatal(args ...interface{})              { l.logger.Fatal(args...) }
-func (l *defLogger) Fatalf(str string, args ...interface{}) { l.logger.Fatalf(str, args...) }

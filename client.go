@@ -72,7 +72,7 @@ type DataType struct {
 	CharSet string `json:"characterSet,omitempty"`
 }
 
-func Connect(conf ConnConf) *Conn {
+func Connect(conf ConnConf) (*Conn, error) {
 
 	c := &Conn{
 		Conf:          conf,
@@ -85,13 +85,20 @@ func Connect(conf ConnConf) *Conn {
 		c.log = newDefaultLogger()
 	}
 
-	// Both of these are fatal if they encounter an error
-	c.wsConnect()
-	c.login()
+	err := c.wsConnect()
+	if err != nil {
+		return nil, err
+	}
+
+	err = c.login()
+	if err != nil {
+		return nil, err
+	}
+
 	if conf.Timeout > 0 {
 		c.SetTimeout(conf.Timeout)
 	}
-	return c
+	return c, nil
 }
 
 func (c *Conn) Disconnect() {
@@ -245,7 +252,7 @@ func (c *Conn) FetchChan(sql string, args ...interface{}) (<-chan []interface{},
 		return nil, err
 	}
 	if response["numResults"].(float64) != 1 {
-		c.log.Fatalf("Unexpected numResults: %s", response["numResults"].(float64))
+		return nil, fmt.Errorf("Unexpected numResults: %v", response["numResults"].(float64))
 	}
 	results := response["results"].([]interface{})[0].(map[string]interface{})
 	if results["resultSet"] == nil {
@@ -268,7 +275,7 @@ func (c *Conn) FetchChan(sql string, args ...interface{}) (<-chan []interface{},
 				}
 				chunk, err := c.send(fetchReq)
 				if err != nil {
-					panic(err) // TODO Return an error instead
+					panic(err)
 				}
 				i += chunk["numRows"].(float64)
 				transposeToChan(ch, chunk["data"].([]interface{}))
@@ -368,14 +375,14 @@ type closeResultSetJSON struct {
 	ResultSetHandles []float64 `json:"resultSetHandles"`
 }
 
-func (c *Conn) login() {
+func (c *Conn) login() error {
 	loginReq := &loginJSON{
 		Command:         "login",
 		ProtocolVersion: 1,
 	}
 	res, err := c.send(loginReq) // TODO change req to pointer
 	if err != nil {
-		c.log.Fatal("Unable to login to Exasol: ", err)
+		return err
 	}
 
 	pubKeyMod, _ := hex.DecodeString(res["publicKeyModulus"].(string))
@@ -391,7 +398,7 @@ func (c *Conn) login() {
 	password := []byte(c.Conf.Password)
 	encPass, err := rsa.EncryptPKCS1v15(rand.Reader, &pubKey, password)
 	if err != nil {
-		c.log.Fatal("Pass Enc error:", err, ": ", pubKeyExp)
+		return fmt.Errorf("Password encryption error: %s", err)
 	}
 	b64Pass := base64.StdEncoding.EncodeToString(encPass)
 
@@ -409,7 +416,7 @@ func (c *Conn) login() {
 	}
 	_, err = c.send(authReq)
 	if err != nil {
-		c.log.Fatal("Unable authenticate with Exasol: ", err)
+		return fmt.Errorf("Unable authenticate with Exasol: %s", err)
 	}
 
 	// Unfortunately the sessionID that is returned by the
@@ -420,18 +427,20 @@ func (c *Conn) login() {
 	// TODO: We need a solution for this to avoid the extra query
 	resp, err := c.Execute("SELECT CURRENT_SESSION")
 	if err != nil {
-		c.log.Fatal("Unable fetch session from Exasol: ", err)
+		return fmt.Errorf("Unable fetch session from Exasol: %s", err)
 	}
 	session, err := strconv.ParseUint(
 		resp["results"].([]interface{})[0].(map[string]interface{})["resultSet"].(map[string]interface{})["data"].([]interface{})[0].([]interface{})[0].(string),
 		10, 64,
 	)
 	if err != nil {
-		c.log.Fatal("Unable parse session from Exasol: ", err)
+		return fmt.Errorf("Unable parse session from Exasol: %s", err)
 	}
 	c.SessionID = session
 	c.log.Info("Connected SessionID:", c.SessionID)
 	c.ws.EnableWriteCompression(false)
+
+	return nil
 }
 
 func (c *Conn) SetTimeout(timeout uint32) {
