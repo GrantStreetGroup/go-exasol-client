@@ -84,12 +84,12 @@ func (c *Conn) error(str string, args ...interface{}) error {
 	return err
 }
 
-func transposeToChan(ch chan<- []interface{}, matrix []interface{}) {
+func transposeToChan(ch chan<- []interface{}, matrix [][]interface{}) {
 	// matrix is columnar ... this transposes it to rowular
-	for row := range matrix[0].([]interface{}) {
+	for row := range matrix[0] {
 		ret := make([]interface{}, len(matrix))
 		for col := range matrix {
-			ret[col] = matrix[col].([]interface{})[row]
+			ret[col] = matrix[col][row]
 		}
 		ch <- ret
 	}

@@ -125,32 +125,6 @@ func (c *Conn) StreamExecute(origSQL string, data <-chan []byte) error {
 	return nil
 }
 
-type Rows struct {
-	BytesRead int64
-	Data      chan []byte
-	Pool      *sync.Pool // Use this to return the []bytes
-	Error     error
-
-	conn  *Conn
-	proxy *Proxy
-	stop  chan bool
-	wg    sync.WaitGroup
-}
-
-func (r *Rows) Close() {
-	origCfg := r.conn.Conf.SuppressError
-	if r.proxy.IsRunning() {
-		// Suppress errors from forcing it to stop
-		r.conn.Conf.SuppressError = true
-		select {
-		case r.stop <- true:
-		default:
-		}
-	}
-	r.wg.Wait()
-	r.conn.Conf.SuppressError = origCfg
-}
-
 func (c *Conn) StreamSelect(schema, table string) *Rows {
 	sql := c.getTableExportSQL(schema, table)
 	return c.StreamQuery(sql)
@@ -195,10 +169,36 @@ func (c *Conn) StreamQuery(exportSQL string) *Rows {
 	return r
 }
 
+type Rows struct {
+	BytesRead int64
+	Data      chan []byte
+	Pool      *sync.Pool // Use this to return the []bytes
+	Error     error
+
+	conn  *Conn
+	proxy *Proxy
+	stop  chan bool
+	wg    sync.WaitGroup
+}
+
+func (r *Rows) Close() {
+	origCfg := r.conn.Conf.SuppressError
+	if r.proxy.IsRunning() {
+		// Suppress errors from forcing it to stop
+		r.conn.Conf.SuppressError = true
+		select {
+		case r.stop <- true:
+		default:
+		}
+	}
+	r.wg.Wait()
+	r.conn.Conf.SuppressError = origCfg
+}
+
 /*--- Private Routines ---*/
 
 func (r *Rows) streamQuery(exportSQL string) error {
-	proxy, resp, err := r.conn.initProxy(exportSQL)
+	proxy, receiver, err := r.conn.initProxy(exportSQL)
 	if err != nil {
 		return err
 	}
@@ -214,7 +214,7 @@ func (r *Rows) streamQuery(exportSQL string) error {
 	}()
 	go func() {
 		// This returns the result of the EXPORT query
-		_, err := resp()
+		err := receiver(&response{})
 		respErr <- err
 	}()
 
@@ -243,9 +243,9 @@ func (r *Rows) streamQuery(exportSQL string) error {
 func (c *Conn) streamExecuteNoRetry(origSQL string, data <-chan []byte) (
 	bytesWritten int64, err error,
 ) {
-	proxy, resp, err := c.initProxy(origSQL)
+	proxy, receiver, err := c.initProxy(origSQL)
 	if err != nil {
-		return 0, err
+		return 0, fmt.Errorf("Unable to import or export data: %s\n%s", origSQL, err)
 	}
 	defer proxy.Shutdown()
 
@@ -253,13 +253,14 @@ func (c *Conn) streamExecuteNoRetry(origSQL string, data <-chan []byte) (
 	respErr := make(chan error, 1)
 	go func() {
 		// This is a blocking writer of the CSV data
-		bytesWritten, err = proxy.Write(data)
-		dataErr <- err
+		var e error
+		bytesWritten, e = proxy.Write(data)
+		dataErr <- e
 	}()
 	go func() {
 		// This returns the result of the IMPORT query
-		_, err := resp()
-		respErr <- err
+		e := receiver(&response{})
+		respErr <- e
 	}()
 
 	select {
@@ -276,13 +277,13 @@ func (c *Conn) streamExecuteNoRetry(origSQL string, data <-chan []byte) (
 	}
 
 	if err != nil {
-		err = fmt.Errorf("Unable to bulk import data: %s\n%s", origSQL, err)
+		err = fmt.Errorf("Unable to import or export data: %s\n%s", origSQL, err)
 	}
 
 	return bytesWritten, err
 }
 
-func (c *Conn) initProxy(sql string) (*Proxy, func() (map[string]interface{}, error), error) {
+func (c *Conn) initProxy(sql string) (*Proxy, func(interface{}) error, error) {
 	proxy, err := NewProxy(c.Conf.Host, c.Conf.Port, &bufPool, c.log)
 	if err != nil {
 		c.error(err.Error())
@@ -292,19 +293,19 @@ func (c *Conn) initProxy(sql string) (*Proxy, func() (map[string]interface{}, er
 	proxyURL := fmt.Sprintf("http://%s:%d", proxy.Host, proxy.Port)
 	sql = fmt.Sprintf(sql, proxyURL)
 
-	req := &executeStmtJSON{
+	req := &execReq{
 		Command: "execute",
-		SQLtext: sql,
+		SqlText: sql,
 	}
 	c.log.Debug("Stream sql: ", sql)
-	response, err := c.asyncSend(req)
+	receiver, err := c.asyncSend(req)
 	if err != nil {
 		c.error("Unable to stream sql: %s %s", sql, err)
 		proxy.Shutdown()
 		return nil, nil, err
 	}
 
-	return proxy, response, nil
+	return proxy, receiver, nil
 }
 
 func retryableError(err error) bool {

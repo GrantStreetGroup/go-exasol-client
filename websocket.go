@@ -13,9 +13,10 @@
 package exasol
 
 import (
-	"errors"
 	"fmt"
 	"net/url"
+	"reflect"
+	"regexp"
 
 	"github.com/gorilla/websocket"
 )
@@ -47,40 +48,39 @@ func (c *Conn) wsConnect() error {
 	return nil
 }
 
-func (c *Conn) send(request interface{}) (map[string]interface{}, error) {
-	receive, err := c.asyncSend(request)
+// Request and Response are pointers to structs representing the API JSON.
+// The Response struct is updated in-place.
+
+func (c *Conn) send(request, response interface{}) error {
+	receiver, err := c.asyncSend(request)
 	if err != nil {
-		return nil, err
+		return err
 	}
-	return receive()
+	return receiver(response)
 }
 
-func (c *Conn) asyncSend(request interface{}) (func() (map[string]interface{}, error), error) {
+func (c *Conn) asyncSend(request interface{}) (func(interface{}) error, error) {
 	err := c.ws.WriteJSON(request)
 	if err != nil {
 		return nil, c.error("WebSocket API Error sending: %s", err)
 	}
 
-	return func() (map[string]interface{}, error) {
-		var response map[string]interface{}
-		var result map[string]interface{}
-		err = c.ws.ReadJSON(&response)
-
+	return func(response interface{}) error {
+		err = c.ws.ReadJSON(response)
 		if err != nil {
-			c.error("WebSocket API Error recving: %s", err)
-		} else if response["status"] != "ok" {
-			exception := response["exception"].(map[string]interface{})
-			err = errors.New(exception["text"].(string))
-			c.error("Server Error: %s", err)
-		} else if respData, ok := response["responseData"]; ok {
-			result = respData.(map[string]interface{})
-		} else if attr, ok := response["attributes"]; ok {
-			// Some responses like getAttributes have no response data
-			result = attr.(map[string]interface{})
-		} else {
-			// Some responses don't even have attr (like disconnect)
+			if regexp.MustCompile(`abnormal closure`).
+				MatchString(err.Error()) {
+				return fmt.Errorf("Server terminated statement")
+			}
+			return fmt.Errorf("WebSocket API Error recving: %s", err)
 		}
-
-		return result, err
+		r := reflect.Indirect(reflect.ValueOf(response))
+		status := r.FieldByName("Status").String()
+		if status != "ok" {
+			err := reflect.Indirect(r.FieldByName("Exception")).
+				FieldByName("Text").String()
+			return fmt.Errorf("Server Error: %s", err)
+		}
+		return nil
 	}, nil
 }

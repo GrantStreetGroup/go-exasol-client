@@ -17,32 +17,10 @@ import (
 	"time"
 )
 
-type createPrepStmtJSON struct {
-	Command    string   `json:"command"`
-	Attributes attrJSON `json:"attributes,omitempty"`
-	SQLtext    string   `json:"sqlText"`
-}
-
-type execPrepStmtJSON struct {
-	Command         string          `json:"command"`
-	Attributes      attrJSON        `json:"attributes,omitempty"`
-	StatementHandle int             `json:"statementHandle"`
-	NumColumns      int             `json:"numColumns"`
-	NumRows         int             `json:"numRows"`
-	Columns         []interface{}   `json:"columns"`
-	Data            [][]interface{} `json:"data"`
-}
-
-type closePrepStmtJSON struct {
-	Command         string   `json:"command"`
-	Attributes      attrJSON `json:"attributes,omitempty"`
-	StatementHandle int      `json:"statementHandle"`
-}
-
 type prepStmt struct {
-	sth        float64
-	lastUsed   time.Time
-	columnDefs []interface{}
+	sth      int
+	columns  []column
+	lastUsed time.Time
 }
 
 func (c *Conn) getPrepStmt(schema, sql string) (*prepStmt, error) {
@@ -89,27 +67,31 @@ func (c *Conn) getPrepStmt(schema, sql string) (*prepStmt, error) {
 }
 
 func (c *Conn) createPrepStmt(schema string, sql string) (*prepStmt, error) {
-	sthReq := &createPrepStmtJSON{
+	sthReq := &createPrepStmtReq{
 		Command:    "createPreparedStatement",
-		Attributes: attrJSON{CurrentSchema: schema},
-		SQLtext:    sql,
+		Attributes: &Attributes{CurrentSchema: schema},
+		SqlText:    sql,
 	}
-	resp, err := c.send(sthReq)
+	sthRes := &createPrepStmtRes{}
+	err := c.send(sthReq, sthRes)
 	if err != nil {
 		return nil, err
 	}
 
-	sth := resp["statementHandle"].(float64)
-	paramData := resp["parameterData"].(map[string]interface{})
-	columnDefs := paramData["columns"].([]interface{})
-	return &prepStmt{sth, time.Now(), columnDefs}, nil
+	sth := sthRes.ResponseData.StatementHandle
+	cols := sthRes.ResponseData.ParameterData.Columns
+	return &prepStmt{sth, cols, time.Now()}, nil
 }
 
-func (c *Conn) closePrepStmt(sth float64) {
+func (c *Conn) closePrepStmt(sth int) error {
 	c.log.Debug("Closing stmt handle ", sth)
-	closeReq := &closePrepStmtJSON{
+	closeReq := &closePrepStmt{
 		Command:         "closePreparedStatement",
 		StatementHandle: int(sth),
 	}
-	c.send(closeReq)
+	err := c.send(closeReq, &response{})
+	if err != nil {
+		return c.error("Unable to closePrepStmt: %s", err)
+	}
+	return nil
 }

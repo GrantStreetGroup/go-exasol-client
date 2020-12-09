@@ -56,7 +56,7 @@ func (s *testSuite) connectExasol() {
 		Timeout:  10,
 	})
 	if err != nil {
-		logrus.Fatalf("Unable to connect to Exasol: %s", err)
+		logrus.Fatal(err)
 	}
 }
 
