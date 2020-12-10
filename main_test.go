@@ -26,9 +26,10 @@ var testLoglevel = flag.String("loglevel", "warning", "Output loglevel")
 
 type testSuite struct {
 	suite.Suite
-	exaConn  *Conn
-	loglevel string
-	schema   string
+	exaConn *Conn
+	log     *logrus.Logger
+	schema  string
+	qschema string
 }
 
 func TestExasolClient(t *testing.T) {
@@ -40,21 +41,26 @@ func TestExasolClient(t *testing.T) {
 
 func initTestSuite() *testSuite {
 	s := new(testSuite)
-	s.loglevel = *testLoglevel
-	s.schema = "[test]"
+	s.log = customTestLogger(*testLoglevel)
+	s.schema = "test"
+	s.qschema = "[test]"
 	return s
 }
 
-func (s *testSuite) connectExasol() {
-	var err error
-	s.exaConn, err = Connect(ConnConf{
+func (s *testSuite) connConf() ConnConf {
+	return ConnConf{
 		Host:     *testHost,
 		Port:     uint16(*testPort),
 		Username: "SYS",
 		Password: *testPass,
-		Logger:   customTestLogger(s.loglevel),
+		Logger:   s.log,
 		Timeout:  10,
-	})
+	}
+}
+
+func (s *testSuite) connectExasol() {
+	var err error
+	s.exaConn, err = Connect(s.connConf())
 	if err != nil {
 		logrus.Fatal(err)
 	}
@@ -62,8 +68,8 @@ func (s *testSuite) connectExasol() {
 
 func (s *testSuite) SetupTest() {
 	if s.exaConn != nil {
-		s.execute("DROP SCHEMA IF EXISTS " + s.schema + " CASCADE")
-		s.execute("CREATE SCHEMA " + s.schema)
+		s.execute("DROP SCHEMA IF EXISTS " + s.qschema + " CASCADE")
+		s.execute("CREATE SCHEMA " + s.qschema)
 	}
 }
 
@@ -90,8 +96,10 @@ func (s *testSuite) fetch(sql string) [][]interface{} {
 	return data
 }
 
-func customTestLogger(logLevelStr string) *logrus.Entry {
+func customTestLogger(logLevelStr string) *logrus.Logger {
+	log := logrus.New()
 	l, _ := logrus.ParseLevel(logLevelStr)
-	logrus.SetLevel(l)
-	return logrus.WithFields(logrus.Fields{"test": "123"})
+	log.SetLevel(l)
+	log.WithFields(logrus.Fields{"test": "123"})
+	return log
 }

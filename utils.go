@@ -26,8 +26,23 @@ var keywords map[string]bool
 
 /*--- Public Interface ---*/
 
-func (c *Conn) QuoteIdent(ident string) string {
-	if regexp.MustCompile(`^\[`).MatchString(ident) {
+// The optional second argument to QuoteIdent is for backwards compatibility.
+// By default if an identifier name is an unquoted Exasol keyword it is
+// uppercased before quoting. If you would rather it be lowercased then
+// pass in "true" for the second argument.
+
+func (c *Conn) QuoteIdent(ident string, args ...interface{}) string {
+	var lowerKeywords bool
+	if len(args) > 0 && args[0] != nil {
+		switch b := args[0].(type) {
+		case bool:
+			lowerKeywords = b
+		default:
+			c.error("QuoteIdent's 2nd param (lowerKeywords) must be boolean")
+		}
+	}
+
+	if regexp.MustCompile(`^(\[|")`).MatchString(ident) {
 		// Return if already quoted
 		return ident
 	}
@@ -47,7 +62,11 @@ func (c *Conn) QuoteIdent(ident string) string {
 	}
 	_, isKeyword := keywords[strings.ToLower(ident)]
 	if isKeyword {
-		return fmt.Sprintf(`[%s]`, strings.ToLower(ident))
+		if lowerKeywords {
+			return fmt.Sprintf(`[%s]`, strings.ToLower(ident))
+		} else {
+			return fmt.Sprintf(`[%s]`, strings.ToUpper(ident))
+		}
 	} else if regexp.MustCompile(`^[^A-Za-z]`).MatchString(ident) {
 		return fmt.Sprintf(`[%s]`, strings.ToUpper(ident))
 	}
