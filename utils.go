@@ -15,14 +15,10 @@
 package exasol
 
 import (
-	"encoding/json"
 	"fmt"
 	"regexp"
 	"strings"
 	"sync"
-
-	"github.com/davecgh/go-spew/spew"
-	"github.com/op/go-logging"
 )
 
 var keywordLock sync.RWMutex
@@ -30,22 +26,47 @@ var keywords map[string]bool
 
 /*--- Public Interface ---*/
 
-func (c *Conn) QuoteIdent(ident string) string {
+// The optional second argument to QuoteIdent is for backwards compatibility.
+// By default if an identifier name is an unquoted Exasol keyword it is
+// uppercased before quoting. If you would rather it be lowercased then
+// pass in "true" for the second argument.
+
+func (c *Conn) QuoteIdent(ident string, args ...interface{}) string {
+	var lowerKeywords bool
+	if len(args) > 0 && args[0] != nil {
+		switch b := args[0].(type) {
+		case bool:
+			lowerKeywords = b
+		default:
+			c.error("QuoteIdent's 2nd param (lowerKeywords) must be boolean")
+		}
+	}
+
+	if regexp.MustCompile(`^(\[|")`).MatchString(ident) {
+		// Return if already quoted
+		return ident
+	}
+
 	if keywords == nil {
 		keywordLock.Lock()
 		if keywords == nil {
-			keywords = map[string]bool{}
+			kw := map[string]bool{}
 			sql := "SELECT LOWER(keyword) FROM sys.exa_sql_keywords WHERE reserved"
 			kwRes, _ := c.FetchChan(sql)
 			for col := range kwRes {
-				keywords[col[0].(string)] = true
+				kw[col[0].(string)] = true
 			}
+			keywords = kw
 		}
 		keywordLock.Unlock()
 	}
 	_, isKeyword := keywords[strings.ToLower(ident)]
 	if isKeyword {
-		return fmt.Sprintf(`[%s]`, strings.ToLower(ident))
+		if lowerKeywords {
+			return fmt.Sprintf(`[%s]`, strings.ToLower(ident))
+		} else {
+			return fmt.Sprintf(`[%s]`, strings.ToUpper(ident))
+		}
 	} else if regexp.MustCompile(`^[^A-Za-z]`).MatchString(ident) {
 		return fmt.Sprintf(`[%s]`, strings.ToUpper(ident))
 	}
@@ -74,34 +95,21 @@ func Transpose(matrix [][]interface{}) [][]interface{} {
 
 /*--- Private Routines ---*/
 
-func (c *Conn) error(args ...interface{}) {
+func (c *Conn) error(str string, args ...interface{}) error {
+	err := fmt.Errorf(str, args...)
 	if c.Conf.SuppressError == false {
-		c.log.Error(args...)
+		c.log.Error(err)
 	}
+	return err
 }
 
-func transposeToChan(ch chan<- []interface{}, matrix []interface{}) {
+func transposeToChan(ch chan<- []interface{}, matrix [][]interface{}) {
 	// matrix is columnar ... this transposes it to rowular
-	for row := range matrix[0].([]interface{}) {
+	for row := range matrix[0] {
 		ret := make([]interface{}, len(matrix))
 		for col := range matrix {
-			ret[col] = matrix[col].([]interface{})[row]
+			ret[col] = matrix[col][row]
 		}
 		ch <- ret
 	}
-}
-
-// For debugging
-func warnJson(l *logging.Logger, msg interface{}) {
-	json, _ := json.Marshal(msg)
-	l.Errorf("WARNING: %s", json)
-}
-
-func dieJson(l *logging.Logger, msg interface{}) {
-	json, _ := json.Marshal(msg)
-	l.Panicf("DIEING: %s", json)
-}
-
-func dump(i interface{}) {
-	spew.Dump(i)
 }

@@ -17,32 +17,10 @@ import (
 	"time"
 )
 
-type createPrepStmtJSON struct {
-	Command    string   `json:"command"`
-	Attributes attrJSON `json:"attributes,omitempty"`
-	SQLtext    string   `json:"sqlText"`
-}
-
-type execPrepStmtJSON struct {
-	Command         string          `json:"command"`
-	Attributes      attrJSON        `json:"attributes,omitempty"`
-	StatementHandle int             `json:"statementHandle"`
-	NumColumns      int             `json:"numColumns"`
-	NumRows         int             `json:"numRows"`
-	Columns         []interface{}   `json:"columns"`
-	Data            [][]interface{} `json:"data"`
-}
-
-type closePrepStmtJSON struct {
-	Command         string   `json:"command"`
-	Attributes      attrJSON `json:"attributes,omitempty"`
-	StatementHandle int      `json:"statementHandle"`
-}
-
 type prepStmt struct {
-	sth        float64
-	lastUsed   time.Time
-	columnDefs []interface{}
+	sth      int
+	columns  []column
+	lastUsed time.Time
 }
 
 func (c *Conn) getPrepStmt(schema, sql string) (*prepStmt, error) {
@@ -50,7 +28,7 @@ func (c *Conn) getPrepStmt(schema, sql string) (*prepStmt, error) {
 	//      doesn't match the passed in data (i.e. placeholder/binds mismatch)
 	//      otherwise results in lowerlevel websocket closure
 
-	c.log.Info("EXA: Preparing stmt for:", sql)
+	c.log.Debug("Preparing stmt for:", sql)
 	psc := c.prepStmtCache
 	ps := psc[sql]
 	if ps == nil {
@@ -59,14 +37,16 @@ func (c *Conn) getPrepStmt(schema, sql string) (*prepStmt, error) {
 		if err != nil {
 			return nil, err
 		}
-		psc[sql] = ps
-		c.Stats["StmtCacheLen"] = len(psc)
-		c.Stats["StmtCacheMiss"]++
+		if c.Conf.CachePrepStmts {
+			psc[sql] = ps
+			c.Stats["StmtCacheLen"] = len(psc)
+			c.Stats["StmtCacheMiss"]++
+		}
 	}
 	ps.lastUsed = time.Now()
 
 	// Prune the prep stmt cache. I don't know how necessary it is
-	// but I saw something on their site about Exasol
+	// but I saw something on the site about Exasol
 	// being unhappy if there are thousands of open statements.
 	if len(psc) > 1000 {
 		sortedStmts := make([]string, len(psc))
@@ -87,28 +67,31 @@ func (c *Conn) getPrepStmt(schema, sql string) (*prepStmt, error) {
 }
 
 func (c *Conn) createPrepStmt(schema string, sql string) (*prepStmt, error) {
-	sthReq := &createPrepStmtJSON{
+	sthReq := &createPrepStmtReq{
 		Command:    "createPreparedStatement",
-		Attributes: attrJSON{CurrentSchema: schema},
-		SQLtext:    sql,
+		Attributes: &Attributes{CurrentSchema: schema},
+		SqlText:    sql,
 	}
-	resp, err := c.send(sthReq)
+	sthRes := &createPrepStmtRes{}
+	err := c.send(sthReq, sthRes)
 	if err != nil {
 		return nil, err
 	}
 
-	sth := resp["statementHandle"].(float64)
-	paramData := resp["parameterData"].(map[string]interface{})
-	columnDefs := paramData["columns"].([]interface{})
-	c.log.Info("EXA: Got stmt handle ", sth)
-	return &prepStmt{sth, time.Now(), columnDefs}, nil
+	sth := sthRes.ResponseData.StatementHandle
+	cols := sthRes.ResponseData.ParameterData.Columns
+	return &prepStmt{sth, cols, time.Now()}, nil
 }
 
-func (c *Conn) closePrepStmt(sth float64) {
-	c.log.Info("EXA: Closing stmt handle ", sth)
-	closeReq := &closePrepStmtJSON{
+func (c *Conn) closePrepStmt(sth int) error {
+	c.log.Debug("Closing stmt handle ", sth)
+	closeReq := &closePrepStmt{
 		Command:         "closePreparedStatement",
 		StatementHandle: int(sth),
 	}
-	c.send(closeReq)
+	err := c.send(closeReq, &response{})
+	if err != nil {
+		return c.error("Unable to closePrepStmt: %s", err)
+	}
+	return nil
 }

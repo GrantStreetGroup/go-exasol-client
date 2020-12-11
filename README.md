@@ -16,14 +16,16 @@ func main() {
         Username: "user",
         Password: "pass",
     }
-    conn = exasol.Connect(conf)
+    conn, err = exasol.Connect(conf)
     defer conn.Disconnect()
 
     conn.DisableAutoCommit()
 
     conn.Execute("ALTER SESSION SET...")
 
-    _, err := conn.Execute("INSERT INTO t VALUES(?,?,?)", [][]interface{}{...})
+    // To specify placeholder values you can pass in a second argument that is either
+    // []interface{} or [][]interface{} depending on whether you are inserting one or many rows.
+    rowsAffected, err := conn.Execute("INSERT INTO t VALUES(?,?,?)", [][]interface{}{...})
 
     res, err := conn.FetchSlice("SELECT * FROM t WHERE c = ?", []interface{}{...})
     for _, row := range res {
@@ -74,13 +76,11 @@ func main() {
     err := conn.StreamInsert(schemaName, tableName, csvChan)
 
 
-    go func {
-        // Read your CSV data in ~8K chunks
-        for chunk := range csvChan {
-            // chunk is a []byte with partial csvData
-        }
+    res := conn.StreamSelect(schemaName, tableName) // Returns immediately
+    // Read your CSV data in ~8K chunks
+    for chunk := range res.Data {
+        // chunk is a []byte with partial CSV data
     }
-    bytesRead, err := conn.StreamSelect(schemaName, tableName, csvChan)
 
 
     conn.Commit()
@@ -93,8 +93,6 @@ func main() {
   - This library needs to be adapted to the standard Go database/sql interface.
   - Add support for cluster node IP address ranges
   - Add support encryption and compression
-  - Implement timeouts for all query types
-  - Add tests
 
 # Author
 

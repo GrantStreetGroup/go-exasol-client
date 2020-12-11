@@ -1,12 +1,11 @@
 /*
-	This is a database interface library using EXASOL's websocket API
+	This is a database interface library using Exasol's websocket API
     https://github.com/exasol/websocket-api/blob/master/WebsocketAPI.md
 
 	TODOs:
 	1) Support connection compression
 	2) Support connection encryption
 	3) Convert to database/sql interface
-	4) Implement timeouts for all query types
 
 
 	AUTHOR
@@ -27,18 +26,21 @@ import (
 	"crypto/rsa"
 	"encoding/base64"
 	"encoding/hex"
+	"fmt"
 	"math/big"
-	"os"
 	"os/user"
 	"regexp"
 	"runtime"
 	"strconv"
+	"sync"
 
 	"github.com/gorilla/websocket"
-	"github.com/op/go-logging"
 )
 
 /*--- Public Interface ---*/
+
+const ExasolAPIVersion = 1
+const DriverVersion = "2"
 
 type ConnConf struct {
 	Host          string
@@ -46,10 +48,12 @@ type ConnConf struct {
 	Username      string
 	Password      string
 	ClientName    string
+	ClientVersion string
 	Timeout       uint32 // In Seconds
 	SuppressError bool   // Server errors are logged to Error by default
 	// TODO try compressionEnabled: true
-	LogLevel string
+	Logger         Logger // Optional for better control over logging
+	CachePrepStmts bool
 }
 
 type Conn struct {
@@ -57,131 +61,345 @@ type Conn struct {
 	SessionID uint64
 	Stats     map[string]int
 
-	log           *logging.Logger
+	log           Logger
 	ws            *websocket.Conn
 	prepStmtCache map[string]*prepStmt
+	mux           sync.Mutex
 }
 
-type DataType struct {
-	Type    string `json:"type"`
-	Size    int    `json:"size"`
-	Prec    int    `json:"precision"`
-	Scale   int    `json:"scale"`
-	CharSet string `json:"characterSet,omitempty"`
-}
-
-func Connect(conf ConnConf) *Conn {
-
+func Connect(conf ConnConf) (*Conn, error) {
 	c := &Conn{
 		Conf:          conf,
 		Stats:         map[string]int{},
-		log:           logging.MustGetLogger("exasol"),
+		log:           conf.Logger,
 		prepStmtCache: map[string]*prepStmt{},
 	}
-	c.initLogging(conf.LogLevel)
 
-	// Both of these are fatal if they encounter an error
-	c.wsConnect()
-	c.login()
-	return c
+	if c.log == nil {
+		c.log = newDefaultLogger()
+	}
+
+	err := c.wsConnect()
+	if err != nil {
+		return nil, c.error("Unable to connect to Exasol: %s", err)
+	}
+
+	err = c.login()
+	if err != nil {
+		return nil, c.error("Unable to login to Exasol: %s", err)
+	}
+
+	if conf.Timeout > 0 {
+		c.SetTimeout(conf.Timeout)
+	}
+	return c, nil
 }
 
 func (c *Conn) Disconnect() {
-	c.log.Notice("EXA: Disconnecting SessionID:", c.SessionID)
+	c.log.Info("Disconnecting SessionID:", c.SessionID)
 
 	for _, ps := range c.prepStmtCache {
 		c.closePrepStmt(ps.sth)
 	}
-	_, err := c.send(&disconnectJSON{Command: "disconnect"})
+	err := c.send(&request{Command: "disconnect"}, &response{})
 	if err != nil {
-		c.log.Warning("Unable to disconnect from EXASOL: ", err)
+		c.log.Warning("Unable to disconnect from Exasol: ", err)
 	}
 	c.ws.Close()
 	c.ws = nil
 }
 
-func (c *Conn) GetSessionAttr() (map[string]interface{}, error) {
-	c.log.Info("EXA: Getting Attr")
-	req := &sendAttrJSON{Command: "getAttributes"}
-	res, err := c.send(req)
-	return res, err
+func (c *Conn) GetSessionAttr() (*Attributes, error) {
+	req := &request{Command: "getAttributes"}
+	res := &response{}
+	err := c.send(req, res)
+	if err != nil {
+		return nil, c.error("Unable to get session attributes: %s", err)
+	}
+	return res.Attributes, nil
 }
 
-func (c *Conn) EnableAutoCommit() {
-	c.log.Info("EXA: Enabling AutoCommit")
-	c.send(&sendAttrJSON{
+func (c *Conn) EnableAutoCommit() error {
+	c.log.Info("Enabling AutoCommit")
+	err := c.send(&request{
 		Command:    "setAttributes",
-		Attributes: attrJSON{AutoCommit: true},
-	})
+		Attributes: &Attributes{Autocommit: true},
+	}, &response{})
+	if err != nil {
+		return c.error("Unable to enable autocommit: %s", err)
+	}
+	return nil
 }
 
-func (c *Conn) DisableAutoCommit() {
-	c.log.Info("EXA: Disabling AutoCommit")
-	// We have to roll our own map because attrJSON
+func (c *Conn) DisableAutoCommit() error {
+	c.log.Info("Disabling AutoCommit")
+	// We have to roll our own map because Attributes
 	// needs to have AutoCommit set to omitempty which
 	// causes autocommit=false not to be sent :-(
-	c.send(map[string]interface{}{
+	err := c.send(map[string]interface{}{
 		"command": "setAttributes",
 		"attributes": map[string]interface{}{
 			"autocommit": false,
 		},
-	})
+	}, &response{})
+	if err != nil {
+		return c.error("Unable to disable autocommit: %s", err)
+	}
+	return nil
 }
 
 func (c *Conn) Rollback() error {
-	c.log.Info("EXA: Rolling back transaction")
-	_, err := c.Execute("ROLLBACK")
-	return err
+	c.log.Info("Rolling back transaction")
+	_, err := c.execute("ROLLBACK", nil, "", nil, false)
+	if err != nil {
+		return c.error("Unable to rollback: %s", err)
+	}
+	return nil
 }
 
 func (c *Conn) Commit() error {
-	c.log.Info("EXA: Committing transaction")
-	_, err := c.Execute("COMMIT")
-	return err
+	c.log.Info("Committing transaction")
+	_, err := c.execute("COMMIT", nil, "", nil, false)
+	if err != nil {
+		return c.error("Unable to commit: %s", err)
+	}
+	return nil
 }
 
 // TODO change optional args into an ExecConf struct
 // Optional args are binds, default schema, colDefs, isColumnar flag
-func (c *Conn) Execute(sql string, args ...interface{}) (map[string]interface{}, error) {
+// 1) The binds are data bindings for statements containing placeholders.
+//    You can either specify it as []interface{} if there's only one row
+//    or as [][]interface{} if there are multiple rows.
+// 2) Specifying the default schema allows you to use non-schema-qualified
+//    table identifiers in the statement even when you have no schema currently open.
+// 3) The colDefs option expects a []DataTypes. This is only necessary if you are
+//    working around a bug that existed in pre-v6.0.9 of Exasol
+//    (https://www.exasol.com/support/browse/EXASOL-2138)
+// 4) The isColumnar boolean indicates whether the binds specified in the
+//    first optional arg are in columnar format (By default the are in row format.)
+func (c *Conn) Execute(sql string, args ...interface{}) (rowsAffected int64, err error) {
 	var binds [][]interface{}
 	if len(args) > 0 && args[0] != nil {
-		// TODO make the binds optionally just []interface{}
-		binds = args[0].([][]interface{})
+		switch b := args[0].(type) {
+		case [][]interface{}:
+			binds = b
+		case []interface{}:
+			binds = append(binds, b)
+		default:
+			return 0, c.error("Execute's 2nd param (binds) must be []interface{} or [][]interface{}")
+		}
 	}
 	var schema string
 	if len(args) > 1 && args[1] != nil {
-		schema = args[1].(string)
+		switch s := args[1].(type) {
+		case string:
+			schema = s
+		default:
+			return 0, c.error("Execute's 3nd param (schema) must be a string")
+		}
 	}
-	var dataTypes []interface{}
+	var dataTypes []DataType
 	if len(args) > 2 && args[2] != nil {
-		dataTypes = args[2].([]interface{})
+		switch d := args[2].(type) {
+		case []DataType:
+			dataTypes = d
+		default:
+			return 0, c.error("Execute's 4th param (data types) must be a []DataType")
+		}
 	}
 	isColumnar := false // Whether or not the passed-in binds are columnar
 	if len(args) > 3 && args[3] != nil {
-		isColumnar = args[3].(bool)
+		switch ic := args[3].(type) {
+		case bool:
+			isColumnar = ic
+		default:
+			return 0, c.error("Execute's 5th param (isColumnar) must be a boolean")
+		}
 	}
 
+	res, err := c.execute(sql, binds, schema, dataTypes, isColumnar)
+	if err != nil {
+		return 0, c.error("Unable to Execute: %s", err)
+	} else if res.ResponseData.NumResults > 0 {
+		return res.ResponseData.Results[0].RowCount, nil
+	}
+	return 0, nil
+}
+
+// Optional args are binds, and default schema
+// 1) The binds are data bindings for queries containing placeholders.
+//    You can specify it []interface{}
+// 2) Specifying the default schema allows you to use non-schema-qualified
+//    table identifiers in the statement even when you have no schema currently open.
+func (c *Conn) FetchChan(sql string, args ...interface{}) (<-chan []interface{}, error) {
+	var binds []interface{}
+	if len(args) > 0 && args[0] != nil {
+		switch b := args[0].(type) {
+		case []interface{}:
+			binds = b
+		default:
+			return nil, c.error("Fetch's 2nd param (binds) must be []interface{}")
+		}
+	}
+	var schema string
+	if len(args) > 1 && args[1] != nil {
+		switch s := args[1].(type) {
+		case string:
+			schema = s
+		default:
+			return nil, c.error("Fetch's 3nd param (schema) must be a string")
+		}
+	}
+
+	resp, err := c.execute(sql, [][]interface{}{binds}, schema, nil, false)
+	if err != nil {
+		return nil, c.error("Unable to Fetch: %s", err)
+	}
+	respData := resp.ResponseData
+	if respData.NumResults != 1 {
+		return nil, c.error("Unexpected numResults: %v", respData.NumResults)
+	}
+	result := respData.Results[0]
+	if result.ResultType != resultSetType {
+		return nil, c.error("Unexpected result type: %v", result.ResultType)
+	}
+	if result.ResultSet == nil {
+		return nil, c.error("Missing websocket API resultset")
+	}
+
+	ch := make(chan []interface{}, 1000)
+	go c.resultsToChan(result.ResultSet, ch)
+
+	return ch, nil
+}
+
+// For large datasets use FetchChan to avoid buffering all the data in memory
+func (c *Conn) FetchSlice(sql string, args ...interface{}) (res [][]interface{}, err error) {
+	resChan, err := c.FetchChan(sql, args...)
+	if err != nil {
+		return nil, err
+	}
+	for row := range resChan {
+		res = append(res, row)
+	}
+	return res, nil
+}
+
+func (c *Conn) SetTimeout(timeout uint32) error {
+	err := c.send(&request{
+		Command:    "setAttributes",
+		Attributes: &Attributes{QueryTimeout: timeout},
+	}, &response{})
+	if err != nil {
+		return c.error("Unable to set timeout: %s", err)
+	}
+	return nil
+}
+
+// Gets a sync.Mutext lock on the handle.
+// Allows coordinating use of the handle across multiple Go routines
+func (c *Conn) Lock()   { c.mux.Lock() }
+func (c *Conn) Unlock() { c.mux.Unlock() }
+
+/*--- Private Routines ---*/
+
+func (c *Conn) login() error {
+	loginReq := &loginReq{
+		Command:         "login",
+		ProtocolVersion: ExasolAPIVersion,
+	}
+	loginRes := &loginRes{}
+	err := c.send(loginReq, loginRes)
+	if err != nil {
+		return err
+	}
+
+	pubKeyMod, _ := hex.DecodeString(loginRes.ResponseData.PublicKeyModulus)
+	var modulus big.Int
+	modulus.SetBytes(pubKeyMod)
+
+	pubKeyExp, _ := strconv.ParseUint(loginRes.ResponseData.PublicKeyExponent, 16, 32)
+
+	pubKey := rsa.PublicKey{
+		N: &modulus,
+		E: int(pubKeyExp),
+	}
+	password := []byte(c.Conf.Password)
+	encPass, err := rsa.EncryptPKCS1v15(rand.Reader, &pubKey, password)
+	if err != nil {
+		return fmt.Errorf("Password encryption error: %s", err)
+	}
+	b64Pass := base64.StdEncoding.EncodeToString(encPass)
+
+	osUser, _ := user.Current()
+
+	authReq := &authReq{
+		Username:         c.Conf.Username,
+		Password:         b64Pass,
+		UseCompression:   false, // TODO: See if we can get compression working
+		ClientName:       c.Conf.ClientName,
+		ClientVersion:    c.Conf.ClientVersion, // The version of the calling application
+		DriverName:       "go-exasol-client v" + DriverVersion,
+		ClientOs:         runtime.GOOS,
+		ClientOsUsername: osUser.Username,
+		ClientRuntime:    runtime.Version(),
+		Attributes:       &Attributes{Autocommit: true}, // Default AutoCommit to on
+	}
+	authResp := &authResp{}
+	err = c.send(authReq, authResp)
+	if err != nil {
+		return fmt.Errorf("Unable to authenticate: %s", err)
+	}
+
+	c.SessionID = authResp.ResponseData.SessionId
+	c.log.Info("Connected SessionID:", c.SessionID)
+	c.ws.EnableWriteCompression(false)
+
+	return nil
+}
+
+func (c *Conn) execute(
+	sql string,
+	binds [][]interface{},
+	schema string,
+	dataTypes []DataType,
+	isColumnar bool,
+) (*execRes, error) {
 	// Just a simple execute (no prepare) if there are no binds
 	if binds == nil || len(binds) == 0 ||
 		binds[0] == nil || len(binds[0]) == 0 {
-		c.log.Info("EXA: Execute Query: ", sql)
-		req := &executeStmtJSON{
+		c.log.Debug("Execute: ", sql)
+		req := &execReq{
 			Command:    "execute",
-			Attributes: attrJSON{CurrentSchema: schema},
-			SQLtext:    sql,
+			Attributes: &Attributes{CurrentSchema: schema},
+			SqlText:    sql,
 		}
-		return c.send(req)
+		res := &execRes{}
+		err := c.send(req, res)
+		return res, err
+	} else {
+		return c.executePrepStmt(sql, binds, schema, dataTypes, isColumnar)
 	}
+}
 
-	// Else need to send data so do a prepare + execute
+func (c *Conn) executePrepStmt(
+	sql string,
+	binds [][]interface{},
+	schema string,
+	dataTypes []DataType,
+	isColumnar bool,
+) (*execRes, error) {
+	// There are binds so we need to send data so do a prepare + execute
 	ps, err := c.getPrepStmt(schema, sql)
 	if err != nil {
 		return nil, err
 	}
 
+	// This is to workaround this bug: https://www.exasol.com/support/browse/EXASOL-2138
 	if dataTypes != nil {
-		for i := range dataTypes {
-			ps.columnDefs[i].(map[string]interface{})["dataType"] = dataTypes[i]
+		for i, dt := range dataTypes {
+			ps.columns[i].DataType = dt
 		}
 	}
 
@@ -191,17 +409,17 @@ func (c *Conn) Execute(sql string, args ...interface{}) (map[string]interface{},
 	numCols := len(binds)
 	numRows := len(binds[0])
 
-	c.log.Infof("EXA: Executing %d x %d stmt", numCols, numRows)
-	execReq := &execPrepStmtJSON{
+	c.log.Debugf("Executing %d x %d stmt", numCols, numRows)
+	req := &execPrepStmt{
 		Command:         "executePreparedStatement",
 		StatementHandle: int(ps.sth),
 		NumColumns:      numCols,
 		NumRows:         numRows,
-		Columns:         ps.columnDefs,
+		Columns:         ps.columns,
 		Data:            binds,
 	}
-
-	res, err := c.send(execReq)
+	res := &execRes{}
+	err = c.send(req, res)
 
 	if err != nil &&
 		regexp.MustCompile("Statement handle not found").MatchString(err.Error()) {
@@ -213,209 +431,47 @@ func (c *Conn) Execute(sql string, args ...interface{}) (map[string]interface{},
 			return nil, err
 		}
 		c.log.Warning("Retrying with:", ps.sth)
-		execReq.StatementHandle = int(ps.sth)
-		res, err = c.send(execReq)
+		req.StatementHandle = int(ps.sth)
+		err = c.send(req, res)
 	}
-
+	if !c.Conf.CachePrepStmts {
+		c.closePrepStmt(ps.sth)
+	}
 	return res, err
 }
 
-func (c *Conn) FetchChan(sql string, args ...interface{}) (<-chan []interface{}, error) {
-	var binds []interface{}
-	if len(args) > 0 && args[0] != nil {
-		binds = args[0].([]interface{})
-	}
-	var schema string
-	if len(args) > 1 && args[1] != nil {
-		schema = args[1].(string)
-	}
-
-	response, err := c.Execute(sql, [][]interface{}{binds}, schema)
-	if err != nil {
-		return nil, err
-	}
-	if response["numResults"].(float64) != 1 {
-		c.log.Fatalf("Unexpected numResults: %s", response["numResults"].(float64))
-	}
-	results := response["results"].([]interface{})[0].(map[string]interface{})
-	// TODO die gracefully if there is no resultSet. This happens, for instance,
-	// if you try to fetch and insert statement
-	rs := results["resultSet"].(map[string]interface{})
-
-	ch := make(chan []interface{}, 1000)
-
-	go func() {
-		if rs["numRows"].(float64) == 0 {
-			// Do nothing
-		} else if rsh, ok := rs["resultSetHandle"].(float64); ok {
-			for i := float64(0); i < rs["numRows"].(float64); {
-				fetchReq := &fetchJSON{
-					Command:         "fetch",
-					ResultSetHandle: rsh,
-					StartPosition:   i,
-					NumBytes:        64 * 1024 * 1024, // Max allowed
-				}
-				chunk, err := c.send(fetchReq)
-				if err != nil {
-					c.log.Panic(err)
-				}
-				i += chunk["numRows"].(float64)
-				transposeToChan(ch, chunk["data"].([]interface{}))
+func (c *Conn) resultsToChan(rs *resultSet, ch chan<- []interface{}) {
+	if rs.NumRows == 0 {
+		// Do nothing
+	} else if rs.ResultSetHandle > 0 {
+		for i := uint64(0); i < rs.NumRows; {
+			fetchReq := &fetchReq{
+				Command:         "fetch",
+				ResultSetHandle: rs.ResultSetHandle,
+				StartPosition:   i,
+				NumBytes:        64 * 1024 * 1024, // Max allowed
 			}
-
-			closeRSReq := &closeResultSetJSON{
-				Command:          "closeResultSet",
-				ResultSetHandles: []float64{rsh},
-			}
-			_, err = c.send(closeRSReq)
+			fetchRes := &fetchRes{}
+			err := c.send(fetchReq, fetchRes)
 			if err != nil {
-				c.log.Warning("Unable to close result set:", err)
+				// Panic because this routine is async so no good
+				// way to tell the caller that something bad happened
+				panic(err)
 			}
-		} else {
-			transposeToChan(ch, rs["data"].([]interface{}))
+			i += fetchRes.ResponseData.NumRows
+			transposeToChan(ch, fetchRes.ResponseData.Data)
 		}
-		close(ch)
-	}()
 
-	return ch, nil
-}
-
-// For large datasets use FetchChan to avoid buffering all the data in memory
-func (c *Conn) FetchSlice(sql string, args ...interface{}) (res [][]interface{}, err error) {
-	resChan, err := c.FetchChan(sql, args...)
-	if err != nil {
-		return
+		closeRSReq := &closeResultSet{
+			Command:          "closeResultSet",
+			ResultSetHandles: []int{rs.ResultSetHandle},
+		}
+		err := c.send(closeRSReq, &response{})
+		if err != nil {
+			c.log.Warning("Unable to close result set:", err)
+		}
+	} else {
+		transposeToChan(ch, rs.Data)
 	}
-	for row := range resChan {
-		res = append(res, row)
-	}
-	return
-}
-
-/*--- Private Routines ---*/
-
-type attrJSON struct {
-	AutoCommit    bool   `json:"autocommit,omitempty"`
-	CurrentSchema string `json:"currentSchema,omitempty"`
-}
-
-type loginJSON struct {
-	Command         string `json:"command"`
-	ProtocolVersion uint16 `json:"protocolVersion"`
-}
-
-type authJSON struct {
-	Username         string `json:"username"`
-	Password         string `json:"password"`
-	UseCompression   bool   `json:"useCompression"`
-	ClientName       string `json:"clientName,omitempty"`
-	DriverName       string `json:"driverName,omitempty"`
-	ClientOsUsername string `json:"clientOsUsername,omitempty"`
-	ClientOs         string `json:"clientOs,omitempty"`
-	// TODO specify these
-	//SessionId        uint64 `json:"useCompression,omitempty"`
-	//ClientLanguage   string `json:"useCompression,omitempty"`
-	//ClientVersion    string `json:"useCompression,omitempty"`
-	//ClientRuntime    string `json:"useCompression,omitempty"`
-	Attributes attrJSON `json:"attributes,omitempty"`
-}
-
-type sendAttrJSON struct {
-	Command    string   `json:"command"`
-	Attributes attrJSON `json:"attributes"`
-}
-
-type disconnectJSON struct {
-	Command    string   `json:"command"`
-	Attributes attrJSON `json:"attributes,omitempty"`
-}
-
-type executeStmtJSON struct {
-	Command    string   `json:"command"`
-	Attributes attrJSON `json:"attributes,omitempty"`
-	SQLtext    string   `json:"sqlText"`
-}
-
-type fetchJSON struct {
-	Command    string   `json:"command"`
-	Attributes attrJSON `json:"attributes,omitempty"`
-	// TODO change these back to ints? fetch change select * from exacols gave strange websocket error
-	ResultSetHandle float64 `json:"resultSetHandle"`
-	StartPosition   float64 `json:"startPosition"`
-	NumBytes        int     `json:"numBytes"`
-}
-
-type closeResultSetJSON struct {
-	Command          string    `json:"command"`
-	Attributes       attrJSON  `json:"attributes,omitempty"`
-	ResultSetHandles []float64 `json:"resultSetHandles"`
-}
-
-func (c *Conn) initLogging(logLevelStr string) {
-	if logLevelStr == "" {
-		logLevelStr = "error"
-	}
-	logLevel, err := logging.LogLevel(logLevelStr)
-	if err != nil {
-		c.log.Fatal("Unrecognized log level", err)
-	}
-	logFormat := logging.MustStringFormatter(
-		"%{color}%{time:15:04:05.000} %{shortfunc}: " +
-			"%{level:.4s} %{id:03x}%{color:reset} %{message}",
-	)
-	backend := logging.NewLogBackend(os.Stderr, "[exasol]", 0)
-	formattedBackend := logging.NewBackendFormatter(backend, logFormat)
-	leveledBackend := logging.AddModuleLevel(formattedBackend)
-	leveledBackend.SetLevel(logLevel, "exasol")
-	c.log.SetBackend(leveledBackend)
-}
-
-func (c *Conn) login() {
-	c.log.Notice("EXA: Logging in")
-	loginReq := &loginJSON{
-		Command:         "login",
-		ProtocolVersion: 1,
-	}
-	res, err := c.send(loginReq) // TODO change req to pointer
-	if err != nil {
-		c.log.Fatal("Unable to login to EXASOL: ", err)
-	}
-
-	pubKeyMod, _ := hex.DecodeString(res["publicKeyModulus"].(string))
-	var modulus big.Int
-	modulus.SetBytes(pubKeyMod)
-
-	pubKeyExp, _ := strconv.ParseUint(res["publicKeyExponent"].(string), 16, 32)
-
-	pubKey := rsa.PublicKey{
-		N: &modulus,
-		E: int(pubKeyExp),
-	}
-	password := []byte(c.Conf.Password)
-	encPass, err := rsa.EncryptPKCS1v15(rand.Reader, &pubKey, password)
-	if err != nil {
-		c.log.Fatal("Pass Enc error:", err, ": ", pubKeyExp)
-	}
-	b64Pass := base64.StdEncoding.EncodeToString(encPass)
-
-	osUser, _ := user.Current()
-
-	c.log.Notice("EXA: Authenticating")
-	authReq := &authJSON{
-		Username:         c.Conf.Username,
-		Password:         b64Pass,
-		UseCompression:   false, // TODO: See if we can get compression working
-		ClientName:       c.Conf.ClientName,
-		DriverName:       "go-exasol",
-		ClientOs:         runtime.GOOS,
-		ClientOsUsername: osUser.Username,
-		Attributes:       attrJSON{AutoCommit: true}, // Default AutoCommit to on
-	}
-	resp, err := c.send(authReq)
-	if err != nil {
-		c.log.Fatal("Unable authenticate with EXASOL: ", err)
-	}
-	c.SessionID = uint64(resp["sessionId"].(float64))
-	c.log.Notice("EXA: Connected SessionID:", c.SessionID)
-	c.ws.EnableWriteCompression(false)
+	close(ch)
 }
