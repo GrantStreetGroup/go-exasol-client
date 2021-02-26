@@ -60,6 +60,7 @@ type Conn struct {
 	Conf      ConnConf
 	SessionID uint64
 	Stats     map[string]int
+	Metadata  *AuthData
 
 	log           Logger
 	ws            *websocket.Conn
@@ -352,7 +353,8 @@ func (c *Conn) login() error {
 		return fmt.Errorf("Unable to authenticate: %s", err)
 	}
 
-	c.SessionID = authResp.ResponseData.SessionId
+	c.SessionID = authResp.ResponseData.SessionID
+	c.Metadata = authResp.ResponseData
 	c.log.Info("Connected SessionID:", c.SessionID)
 	c.ws.EnableWriteCompression(false)
 

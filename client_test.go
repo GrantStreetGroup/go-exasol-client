@@ -238,6 +238,7 @@ func (s *testSuite) TestSessionID() {
 	exa := s.exaConn
 	sesh, _ := exa.FetchSlice("SELECT CURRENT_SESSION")
 	s.Equal(sesh[0][0].(string), fmt.Sprintf("%d", exa.SessionID), "SessionID is correct")
+	s.Equal(sesh[0][0].(string), fmt.Sprintf("%d", exa.Metadata.SessionID), "SessionID in metadata is correct")
 }
 
 func (s *testSuite) TestExecute() {

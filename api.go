@@ -94,11 +94,11 @@ type authReq struct {
 
 type authResp struct {
 	response
-	ResponseData *authData `json:"responseData"`
+	ResponseData *AuthData `json:"responseData"`
 }
 
-type authData struct {
-	SessionId             uint64  `json:"sessionId"`
+type AuthData struct {
+	SessionID             uint64  `json:"sessionId"`
 	ProtocolVersion       float64 `json:"protocolVersion"`
 	ReleaseVersion        string  `json:"releaseVersion"`
 	DatabaseName          string  `json:"databaseName"`
