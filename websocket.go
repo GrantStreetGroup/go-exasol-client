@@ -33,8 +33,12 @@ func init() {
 
 func (c *Conn) wsConnect() error {
 	uri := fmt.Sprintf("%s:%d", c.Conf.Host, c.Conf.Port)
+	scheme := "ws"
+	if c.Conf.TLSConfig != nil {
+		scheme = "wss"
+	}
 	u := url.URL{
-		Scheme: "ws",
+		Scheme: scheme,
 		Host:   uri,
 	}
 	c.log.Debugf("Connecting to %s", u.String())
@@ -42,6 +46,7 @@ func (c *Conn) wsConnect() error {
 	if c.Conf.ConnectTimeout != time.Duration(0) {
 		defaultDialer.HandshakeTimeout = c.Conf.ConnectTimeout
 	}
+	defaultDialer.TLSClientConfig = c.Conf.TLSConfig
 
 	// According to documentation:
 	// > It is safe to call Dialer's methods concurrently.

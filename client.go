@@ -4,8 +4,7 @@
 
 	TODOs:
 	1) Support connection compression
-	2) Support connection encryption
-	3) Convert to database/sql interface
+	2) Convert to database/sql interface
 
 
 	AUTHOR
@@ -24,6 +23,7 @@ package exasol
 import (
 	"crypto/rand"
 	"crypto/rsa"
+	"crypto/tls"
 	"encoding/base64"
 	"encoding/hex"
 	"fmt"
@@ -52,6 +52,7 @@ type ConnConf struct {
 	ClientVersion  string
 	ConnectTimeout time.Duration
 	QueryTimeout   time.Duration
+	TLSConfig      *tls.Config
 	SuppressError  bool // Server errors are logged to Error by default
 	// TODO try compressionEnabled: true
 	Logger         Logger // Optional for better control over logging

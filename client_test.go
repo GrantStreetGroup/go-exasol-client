@@ -2,6 +2,7 @@ package exasol
 
 import (
 	"bytes"
+	"crypto/tls"
 	"fmt"
 	"os"
 	"strconv"
@@ -189,6 +190,36 @@ func (s *testSuite) TestConnCachePrepStmt() {
 	s.Equal(c.Stats["StmtCacheLen"], 1, "Cache is not empty")
 	s.Equal(c.Stats["StmtCacheMiss"], 1, "Cache miss not recorded")
 
+	c.Disconnect()
+}
+
+func (s *testSuite) TestConnEncryption() {
+	conf := s.connConf()
+
+	// Enable Encryption
+	conf.TLSConfig = &tls.Config{InsecureSkipVerify: true}
+	c, err := Connect(conf)
+	s.Nil(err, "No connection errors")
+
+	got, _ := c.FetchSlice(`
+		SELECT encrypted
+		FROM exa_user_sessions
+		WHERE session_id = CURRENT_SESSION
+	`)
+	s.Equal(true, got[0][0].(bool), "Connection is encrypted")
+	c.Disconnect()
+
+	// Disable Encryption
+	conf.TLSConfig = nil
+	c, err = Connect(conf)
+	s.Nil(err, "No connection errors")
+
+	got, _ = c.FetchSlice(`
+		SELECT encrypted
+		FROM exa_user_sessions
+		WHERE session_id = CURRENT_SESSION
+	`)
+	s.Equal(false, got[0][0].(bool), "Connection is encrypted")
 	c.Disconnect()
 }
 

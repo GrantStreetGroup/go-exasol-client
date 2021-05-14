@@ -15,6 +15,7 @@ func main() {
         Port:     8563,
         Username: "user",
         Password: "pass",
+        TLSConfig: &tls.Config{...}, // If specified encryption is enabled
     }
     conn, err = exasol.Connect(conf)
     defer conn.Disconnect()
@@ -92,7 +93,7 @@ func main() {
 
   - This library needs to be adapted to the standard Go database/sql interface.
   - Add support for cluster node IP address ranges
-  - Add support encryption and compression
+  - Add support compression
 
 # Author
 
