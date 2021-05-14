@@ -33,6 +33,7 @@ import (
 	"runtime"
 	"strconv"
 	"sync"
+	"time"
 
 	"github.com/gorilla/websocket"
 )
@@ -43,17 +44,20 @@ const ExasolAPIVersion = 1
 const DriverVersion = "2"
 
 type ConnConf struct {
-	Host          string
-	Port          uint16
-	Username      string
-	Password      string
-	ClientName    string
-	ClientVersion string
-	Timeout       uint32 // In Seconds
-	SuppressError bool   // Server errors are logged to Error by default
+	Host           string
+	Port           uint16
+	Username       string
+	Password       string
+	ClientName     string
+	ClientVersion  string
+	ConnectTimeout time.Duration
+	QueryTimeout   time.Duration
+	SuppressError  bool // Server errors are logged to Error by default
 	// TODO try compressionEnabled: true
 	Logger         Logger // Optional for better control over logging
 	CachePrepStmts bool
+
+	Timeout uint32 // Deprecated - Use Query/ConnectTimeout instead
 }
 
 type Conn struct {
@@ -76,6 +80,11 @@ func Connect(conf ConnConf) (*Conn, error) {
 		prepStmtCache: map[string]*prepStmt{},
 	}
 
+	if c.Conf.Timeout > 0 {
+		c.log.Warning("exasol.ConnConf.Timeout option is deprecated. Use QueryTimeout instead.")
+		c.Conf.QueryTimeout = time.Duration(c.Conf.Timeout) * time.Second
+	}
+
 	if c.log == nil {
 		c.log = newDefaultLogger()
 	}
@@ -90,9 +99,6 @@ func Connect(conf ConnConf) (*Conn, error) {
 		return nil, c.error("Unable to login to Exasol: %s", err)
 	}
 
-	if conf.Timeout > 0 {
-		c.SetTimeout(conf.Timeout)
-	}
 	return c, nil
 }
 
@@ -347,6 +353,11 @@ func (c *Conn) login() error {
 		ClientRuntime:    runtime.Version(),
 		Attributes:       &Attributes{Autocommit: true}, // Default AutoCommit to on
 	}
+
+	if c.Conf.QueryTimeout.Seconds() > 0 {
+		authReq.Attributes.QueryTimeout = uint32(c.Conf.QueryTimeout.Seconds())
+	}
+
 	authResp := &authResp{}
 	err = c.send(authReq, authResp)
 	if err != nil {

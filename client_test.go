@@ -3,6 +3,10 @@ package exasol
 import (
 	"bytes"
 	"fmt"
+	"os"
+	"strconv"
+	"strings"
+	"time"
 
 	"github.com/sirupsen/logrus"
 )
@@ -25,10 +29,10 @@ func (s *testSuite) TestConnClientName() {
 	c.Disconnect()
 }
 
-func (s *testSuite) TestConnTimeout() {
+func (s *testSuite) TestQueryTimeout() {
 	conf := s.connConf()
 	conf.SuppressError = true
-	conf.Timeout = 5
+	conf.QueryTimeout = 5 * time.Second
 	c, err := Connect(conf)
 	s.Nil(err, "No connection errors")
 	c.Execute("OPEN SCHEMA " + s.qschema)
@@ -54,6 +58,30 @@ func (s *testSuite) TestConnTimeout() {
 	s.Equal(int64(0), got, "Timed out")
 
 	// No need to disconnect because the server killed the connection
+}
+
+func (s *testSuite) TestConnectTimeout() {
+	conf := s.connConf()
+	conf.SuppressError = true
+	conf.ConnectTimeout = 5 * time.Second
+	// To test this properly you need to set the EXA_TIMEOUT_HOST ENV
+	// to a host+port that will result in a hanging connection.
+	env := os.Getenv("EXA_TIMEOUT_HOST")
+	if env == "" {
+		s.T().Skip("EXA_TIMEOUT_HOST must be set to 'host:port' in order for TestConnectTimeout to run.")
+	}
+	parts := strings.Split(env, ":")
+	conf.Host = parts[0]
+	port, _ := strconv.ParseUint(parts[1], 10, 64)
+	conf.Port = uint16(port)
+
+	timeIn := time.Now()
+	_, err := Connect(conf)
+	if s.Error(err) {
+		s.Contains(err.Error(), "Unable to connect", "Got error")
+	}
+	s.Less(time.Since(timeIn).Seconds(), conf.ConnectTimeout.Seconds()+1, "It timed out correctly")
+	s.Greater(time.Since(timeIn).Seconds(), conf.ConnectTimeout.Seconds()-1, "It did hang")
 }
 
 func (s *testSuite) TestConnSuppressError() {
@@ -402,7 +430,7 @@ func (s *testSuite) TestFetchSlice() {
 
 func (s *testSuite) TestSetTimeout() {
 	conf := s.connConf()
-	conf.Timeout = 5
+	conf.QueryTimeout = 5 * time.Second
 	c, err := Connect(conf)
 	s.Nil(err)
 	attr, err := c.GetSessionAttr()

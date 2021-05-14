@@ -17,6 +17,7 @@ import (
 	"net/url"
 	"reflect"
 	"regexp"
+	"time"
 
 	"github.com/gorilla/websocket"
 )
@@ -37,6 +38,11 @@ func (c *Conn) wsConnect() error {
 		Host:   uri,
 	}
 	c.log.Debugf("Connecting to %s", u.String())
+
+	if c.Conf.ConnectTimeout != time.Duration(0) {
+		defaultDialer.HandshakeTimeout = c.Conf.ConnectTimeout
+	}
+
 	// According to documentation:
 	// > It is safe to call Dialer's methods concurrently.
 	ws, resp, err := defaultDialer.Dial(u.String(), nil)
