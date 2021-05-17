@@ -5,6 +5,7 @@ import (
 	"crypto/tls"
 	"fmt"
 	"os"
+	"regexp"
 	"strconv"
 	"strings"
 	"time"
@@ -221,6 +222,20 @@ func (s *testSuite) TestConnEncryption() {
 	`)
 	s.Equal(false, got[0][0].(bool), "Connection is encrypted")
 	c.Disconnect()
+}
+
+func (s *testSuite) TestHostRanges() {
+	conf := s.connConf()
+	conf.SuppressError = true // Set to false to see the random output
+	conf.Host = "127.0.0.1..3"
+	conf.Port = 1
+	for i := 0; i < 10; i++ {
+		c, err := Connect(conf)
+		s.Nil(c)
+		if s.Error(err) {
+			s.Regexp(regexp.MustCompile(`\b127\.0\.0\.(1|2|3)\b`), err.Error())
+		}
+	}
 }
 
 func (s *testSuite) TestConnErrors() {

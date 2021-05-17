@@ -14,9 +14,11 @@ package exasol
 
 import (
 	"fmt"
+	"math/rand"
 	"net/url"
 	"reflect"
 	"regexp"
+	"strconv"
 	"time"
 
 	"github.com/gorilla/websocket"
@@ -31,8 +33,38 @@ func init() {
 	defaultDialer.EnableCompression = false
 }
 
-func (c *Conn) wsConnect() error {
-	uri := fmt.Sprintf("%s:%d", c.Conf.Host, c.Conf.Port)
+func (c *Conn) wsConnect() (err error) {
+	host := c.Conf.Host
+
+	isIPRange := regexp.MustCompile(`^(\d+)\.(\d+)\.(\d+)\.(\d+)\.\.(\d+)$`)
+	if isIPRange.MatchString(host) {
+		// This is an IP range so choose a node at random to connect to.
+		// If that connection fails try another one.
+		ipRange := isIPRange.FindStringSubmatch(host)
+		fromN, _ := strconv.ParseInt(ipRange[4], 10, 32)
+		toN, _ := strconv.ParseInt(ipRange[5], 10, 32)
+		ips := []string{}
+		for i := fromN; i <= toN; i++ {
+			ips = append(ips, fmt.Sprintf("%s.%s.%s.%d", ipRange[1], ipRange[2], ipRange[3], i))
+		}
+		rand.Seed(time.Now().UnixNano())
+		rand.Shuffle(len(ips), func(i, j int) { ips[i], ips[j] = ips[j], ips[i] })
+
+		for _, ip := range ips {
+			err = c.wsConnectHost(ip)
+			if err == nil {
+				break
+			}
+		}
+	} else {
+		err = c.wsConnectHost(host)
+	}
+
+	return err
+}
+
+func (c *Conn) wsConnectHost(host string) error {
+	uri := fmt.Sprintf("%s:%d", host, c.Conf.Port)
 	scheme := "ws"
 	if c.Conf.TLSConfig != nil {
 		scheme = "wss"
