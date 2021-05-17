@@ -2,7 +2,13 @@ package exasol
 
 import (
 	"bytes"
+	"crypto/tls"
 	"fmt"
+	"os"
+	"regexp"
+	"strconv"
+	"strings"
+	"time"
 
 	"github.com/sirupsen/logrus"
 )
@@ -25,10 +31,10 @@ func (s *testSuite) TestConnClientName() {
 	c.Disconnect()
 }
 
-func (s *testSuite) TestConnTimeout() {
+func (s *testSuite) TestQueryTimeout() {
 	conf := s.connConf()
 	conf.SuppressError = true
-	conf.Timeout = 5
+	conf.QueryTimeout = 5 * time.Second
 	c, err := Connect(conf)
 	s.Nil(err, "No connection errors")
 	c.Execute("OPEN SCHEMA " + s.qschema)
@@ -54,6 +60,30 @@ func (s *testSuite) TestConnTimeout() {
 	s.Equal(int64(0), got, "Timed out")
 
 	// No need to disconnect because the server killed the connection
+}
+
+func (s *testSuite) TestConnectTimeout() {
+	conf := s.connConf()
+	conf.SuppressError = true
+	conf.ConnectTimeout = 5 * time.Second
+	// To test this properly you need to set the EXA_TIMEOUT_HOST ENV
+	// to a host+port that will result in a hanging connection.
+	env := os.Getenv("EXA_TIMEOUT_HOST")
+	if env == "" {
+		s.T().Skip("EXA_TIMEOUT_HOST must be set to 'host:port' in order for TestConnectTimeout to run.")
+	}
+	parts := strings.Split(env, ":")
+	conf.Host = parts[0]
+	port, _ := strconv.ParseUint(parts[1], 10, 64)
+	conf.Port = uint16(port)
+
+	timeIn := time.Now()
+	_, err := Connect(conf)
+	if s.Error(err) {
+		s.Contains(err.Error(), "Unable to connect", "Got error")
+	}
+	s.Less(time.Since(timeIn).Seconds(), conf.ConnectTimeout.Seconds()+1, "It timed out correctly")
+	s.Greater(time.Since(timeIn).Seconds(), conf.ConnectTimeout.Seconds()-1, "It did hang")
 }
 
 func (s *testSuite) TestConnSuppressError() {
@@ -162,6 +192,50 @@ func (s *testSuite) TestConnCachePrepStmt() {
 	s.Equal(c.Stats["StmtCacheMiss"], 1, "Cache miss not recorded")
 
 	c.Disconnect()
+}
+
+func (s *testSuite) TestConnEncryption() {
+	conf := s.connConf()
+
+	// Enable Encryption
+	conf.TLSConfig = &tls.Config{InsecureSkipVerify: true}
+	c, err := Connect(conf)
+	s.Nil(err, "No connection errors")
+
+	got, _ := c.FetchSlice(`
+		SELECT encrypted
+		FROM exa_user_sessions
+		WHERE session_id = CURRENT_SESSION
+	`)
+	s.Equal(true, got[0][0].(bool), "Connection is encrypted")
+	c.Disconnect()
+
+	// Disable Encryption
+	conf.TLSConfig = nil
+	c, err = Connect(conf)
+	s.Nil(err, "No connection errors")
+
+	got, _ = c.FetchSlice(`
+		SELECT encrypted
+		FROM exa_user_sessions
+		WHERE session_id = CURRENT_SESSION
+	`)
+	s.Equal(false, got[0][0].(bool), "Connection is encrypted")
+	c.Disconnect()
+}
+
+func (s *testSuite) TestHostRanges() {
+	conf := s.connConf()
+	conf.SuppressError = true // Set to false to see the random output
+	conf.Host = "127.0.0.1..3"
+	conf.Port = 1
+	for i := 0; i < 10; i++ {
+		c, err := Connect(conf)
+		s.Nil(c)
+		if s.Error(err) {
+			s.Regexp(regexp.MustCompile(`\b127\.0\.0\.(1|2|3)\b`), err.Error())
+		}
+	}
 }
 
 func (s *testSuite) TestConnErrors() {
@@ -402,7 +476,7 @@ func (s *testSuite) TestFetchSlice() {
 
 func (s *testSuite) TestSetTimeout() {
 	conf := s.connConf()
-	conf.Timeout = 5
+	conf.QueryTimeout = 5 * time.Second
 	c, err := Connect(conf)
 	s.Nil(err)
 	attr, err := c.GetSessionAttr()

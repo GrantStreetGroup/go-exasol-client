@@ -6,6 +6,8 @@
 	We recommend using an Exasol docker container for this:
 		https://github.com/exasol/docker-db
 
+	Run tests via: go test -v -args -testify.m pattern
+
 	The routines in this file are shared by all the test files.
 	There aren't any actual tests in this file.
 */
@@ -54,7 +56,6 @@ func (s *testSuite) connConf() ConnConf {
 		Username: "SYS",
 		Password: *testPass,
 		Logger:   s.log,
-		Timeout:  10,
 	}
 }
 

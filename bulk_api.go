@@ -218,6 +218,11 @@ func (r *Rows) streamQuery(exportSQL string) error {
 		respErr <- err
 	}()
 
+	timeout := make(<-chan time.Time)
+	if r.conn.Conf.QueryTimeout.Seconds() > 0 {
+		timeout = time.After(r.conn.Conf.QueryTimeout)
+	}
+
 	select {
 	case err = <-dataErr:
 		if err == nil {
@@ -227,7 +232,7 @@ func (r *Rows) streamQuery(exportSQL string) error {
 		if err == nil {
 			err = <-dataErr
 		}
-	case <-time.After(time.Duration(r.conn.Conf.Timeout) * time.Second):
+	case <-timeout:
 		err = errors.New("Timed out doing BulkQuery")
 	}
 
@@ -263,6 +268,11 @@ func (c *Conn) streamExecuteNoRetry(origSQL string, data <-chan []byte) (
 		respErr <- e
 	}()
 
+	timeout := make(<-chan time.Time)
+	if c.Conf.QueryTimeout.Seconds() > 0 {
+		timeout = time.After(c.Conf.QueryTimeout)
+	}
+
 	select {
 	case err = <-dataErr:
 		if err == nil {
@@ -272,7 +282,7 @@ func (c *Conn) streamExecuteNoRetry(origSQL string, data <-chan []byte) (
 		if err == nil {
 			err = <-dataErr
 		}
-	case <-time.After(time.Duration(c.Conf.Timeout) * time.Second):
+	case <-timeout:
 		err = fmt.Errorf("Timed out doing StreamExecute")
 	}
 

@@ -11,10 +11,11 @@ import "github.com/grantstreetgroup/go-exasol-client"
 
 func main() {
     conf := exasol.ConnConf{
-        Host:     "cluster-node", // IP ranges not yet supported
+        Host:     "host or ip-range",
         Port:     8563,
         Username: "user",
         Password: "pass",
+        TLSConfig: &tls.Config{...}, // If specified encryption is enabled
     }
     conn, err = exasol.Connect(conf)
     defer conn.Disconnect()
@@ -91,8 +92,7 @@ func main() {
 # TODOs
 
   - This library needs to be adapted to the standard Go database/sql interface.
-  - Add support for cluster node IP address ranges
-  - Add support encryption and compression
+  - Support compression
 
 # Author
 
