@@ -97,10 +97,16 @@ func Transpose(matrix [][]interface{}) [][]interface{} {
 
 func (c *Conn) error(str string, args ...interface{}) error {
 	err := fmt.Errorf(str, args...)
-	if c.Conf.SuppressError == false {
-		c.log.Error(err)
-	}
+	c.logUnsupressedError(err)
 	return err
+}
+
+func (c *Conn) logUnsupressedError(err error) {
+
+	if c.Conf.SuppressError {
+		return
+	}
+	c.log.Error(err)
 }
 
 func transposeToChan(ch chan<- []interface{}, matrix [][]interface{}) {

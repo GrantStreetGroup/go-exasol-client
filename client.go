@@ -92,7 +92,9 @@ func Connect(conf ConnConf) (*Conn, error) {
 
 	err := c.wsConnect()
 	if err != nil {
-		return nil, c.error("Unable to connect to Exasol: %s", err)
+		err = fmt.Errorf("unable to connect to Exasol: %w", err)
+		c.logUnsupressedError(err)
+		return nil, err
 	}
 
 	err = c.login()
