@@ -28,14 +28,13 @@ import (
 	"encoding/hex"
 	"fmt"
 	"math/big"
+	"net/url"
 	"os/user"
 	"regexp"
 	"runtime"
 	"strconv"
 	"sync"
 	"time"
-
-	"github.com/gorilla/websocket"
 )
 
 /*--- Public Interface ---*/
@@ -55,10 +54,30 @@ type ConnConf struct {
 	TLSConfig      *tls.Config
 	SuppressError  bool // Server errors are logged to Error by default
 	// TODO try compressionEnabled: true
-	Logger         Logger // Optional for better control over logging
+	Logger         Logger    // Optional for better control over logging
+	WSHandler      WSHandler // Optional for intercepting websocket traffic
 	CachePrepStmts bool
 
 	Timeout uint32 // Deprecated - Use Query/ConnectTimeout instead
+}
+
+// By default we use the gorilla/websocket implementation however you can also
+// specify a custom websocket handler which you can then use to intercept
+// API traffic. This is handy for:
+//   1. Using a non-gorilla websocket library
+//   2. Emulating Exasol for testing purposes
+//   3. Intercepting and manipulating the traffic (e.g. for buffering, caching etc)
+// See websocket_handler.go for the default implementation.
+// The custom websocket handler must conform to the following interface:
+type WSHandler interface {
+	// tls.Config is optional. If specified SSL should be enabled
+	// time.Duration is the connect timeout (or zero for none)
+	Connect(url.URL, *tls.Config, time.Duration) error
+	EnableCompression(bool)
+	// Write/ReadJSON will be passed structs from api.go
+	WriteJSON(interface{}) error
+	ReadJSON(interface{}) error
+	Close()
 }
 
 type Conn struct {
@@ -68,7 +87,7 @@ type Conn struct {
 	Metadata  *AuthData
 
 	log           Logger
-	ws            *websocket.Conn
+	wsh           WSHandler
 	prepStmtCache map[string]*prepStmt
 	mux           sync.Mutex
 }
@@ -78,6 +97,7 @@ func Connect(conf ConnConf) (*Conn, error) {
 		Conf:          conf,
 		Stats:         map[string]int{},
 		log:           conf.Logger,
+		wsh:           conf.WSHandler,
 		prepStmtCache: map[string]*prepStmt{},
 	}
 
@@ -88,6 +108,10 @@ func Connect(conf ConnConf) (*Conn, error) {
 
 	if c.log == nil {
 		c.log = newDefaultLogger()
+	}
+
+	if c.wsh == nil {
+		c.wsh = newDefaultWSHandler()
 	}
 
 	err := c.wsConnect()
@@ -113,8 +137,8 @@ func (c *Conn) Disconnect() {
 	if err != nil {
 		c.log.Warning("Unable to disconnect from Exasol: ", err)
 	}
-	c.ws.Close()
-	c.ws = nil
+	c.wsh.Close()
+	c.wsh = nil
 }
 
 func (c *Conn) GetSessionAttr() (*Attributes, error) {
@@ -368,7 +392,7 @@ func (c *Conn) login() error {
 	c.SessionID = authResp.ResponseData.SessionID
 	c.Metadata = authResp.ResponseData
 	c.log.Info("Connected SessionID:", c.SessionID)
-	c.ws.EnableWriteCompression(false)
+	c.wsh.EnableCompression(false)
 
 	return nil
 }

@@ -20,18 +20,7 @@ import (
 	"regexp"
 	"strconv"
 	"time"
-
-	"github.com/gorilla/websocket"
 )
-
-var (
-	defaultDialer = *websocket.DefaultDialer
-)
-
-func init() {
-	defaultDialer.Proxy = nil // TODO use proxy env
-	defaultDialer.EnableCompression = false
-}
 
 func (c *Conn) wsConnect() (err error) {
 	host := c.Conf.Host
@@ -75,20 +64,7 @@ func (c *Conn) wsConnectHost(host string) error {
 	}
 	c.log.Debugf("Connecting to %s", u.String())
 
-	if c.Conf.ConnectTimeout != time.Duration(0) {
-		defaultDialer.HandshakeTimeout = c.Conf.ConnectTimeout
-	}
-	defaultDialer.TLSClientConfig = c.Conf.TLSConfig
-
-	// According to documentation:
-	// > It is safe to call Dialer's methods concurrently.
-	ws, resp, err := defaultDialer.Dial(u.String(), nil)
-	if err != nil {
-		c.log.Debugf("resp:%s", resp)
-		return err
-	}
-	c.ws = ws
-	return nil
+	return c.wsh.Connect(u, c.Conf.TLSConfig, c.Conf.ConnectTimeout)
 }
 
 // Request and Response are pointers to structs representing the API JSON.
@@ -103,13 +79,13 @@ func (c *Conn) send(request, response interface{}) error {
 }
 
 func (c *Conn) asyncSend(request interface{}) (func(interface{}) error, error) {
-	err := c.ws.WriteJSON(request)
+	err := c.wsh.WriteJSON(request)
 	if err != nil {
 		return nil, c.errorf("WebSocket API Error sending: %s", err)
 	}
 
 	return func(response interface{}) error {
-		err = c.ws.ReadJSON(response)
+		err = c.wsh.ReadJSON(response)
 		if err != nil {
 			if regexp.MustCompile(`abnormal closure`).
 				MatchString(err.Error()) {
