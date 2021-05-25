@@ -91,7 +91,7 @@ func (c *Conn) closePrepStmt(sth int) error {
 	}
 	err := c.send(closeReq, &response{})
 	if err != nil {
-		return c.error("Unable to closePrepStmt: %s", err)
+		return c.errorf("Unable to closePrepStmt: %s", err)
 	}
 	return nil
 }

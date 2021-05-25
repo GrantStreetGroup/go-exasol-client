@@ -110,14 +110,14 @@ func (c *Conn) StreamExecute(origSQL string, data <-chan []byte) error {
 		if err != nil {
 			if retryableError(err) {
 				if bytesWritten == 0 {
-					c.error("Retrying...")
+					c.errorf("Retrying...")
 					continue
 				}
 				// If there was an error while writing the data
 				// we've lost the data we've written so we can't retry
-				c.error("Data already sent can't retry...")
+				c.errorf("Data already sent can't retry...")
 			}
-			c.error(err.Error())
+			c.errorf(err.Error())
 			return err
 		}
 		break
@@ -158,7 +158,7 @@ func (c *Conn) StreamQuery(exportSQL string) *Rows {
 		for i := 0; i <= 2; i++ {
 			r.Error = r.streamQuery(exportSQL)
 			if retryableError(r.Error) {
-				c.error("Retrying...")
+				c.errorf("Retrying...")
 				r.Error = nil
 				continue
 			}
@@ -239,7 +239,7 @@ func (r *Rows) streamQuery(exportSQL string) error {
 	// If we purposefully prematurely closed the connection
 	// we don't want to raise any errors.
 	if err != nil {
-		r.conn.error("Unable to bulk export data: %s %s", exportSQL, err)
+		r.conn.errorf("Unable to bulk export data: %s %s", exportSQL, err)
 	}
 
 	return err
@@ -296,7 +296,7 @@ func (c *Conn) streamExecuteNoRetry(origSQL string, data <-chan []byte) (
 func (c *Conn) initProxy(sql string) (*Proxy, func(interface{}) error, error) {
 	proxy, err := NewProxy(c.Conf.Host, c.Conf.Port, &bufPool, c.log)
 	if err != nil {
-		c.error(err.Error())
+		c.errorf(err.Error())
 		return nil, nil, err
 	}
 
@@ -310,7 +310,7 @@ func (c *Conn) initProxy(sql string) (*Proxy, func(interface{}) error, error) {
 	c.log.Debug("Stream sql: ", sql)
 	receiver, err := c.asyncSend(req)
 	if err != nil {
-		c.error("Unable to stream sql: %s %s", sql, err)
+		c.errorf("Unable to stream sql: %s %s", sql, err)
 		proxy.Shutdown()
 		return nil, nil, err
 	}

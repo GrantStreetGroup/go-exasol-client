@@ -105,7 +105,7 @@ func (c *Conn) send(request, response interface{}) error {
 func (c *Conn) asyncSend(request interface{}) (func(interface{}) error, error) {
 	err := c.ws.WriteJSON(request)
 	if err != nil {
-		return nil, c.error("WebSocket API Error sending: %s", err)
+		return nil, c.errorf("WebSocket API Error sending: %s", err)
 	}
 
 	return func(response interface{}) error {
