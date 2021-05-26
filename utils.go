@@ -38,7 +38,7 @@ func (c *Conn) QuoteIdent(ident string, args ...interface{}) string {
 		case bool:
 			lowerKeywords = b
 		default:
-			c.error("QuoteIdent's 2nd param (lowerKeywords) must be boolean")
+			c.errorf("QuoteIdent's 2nd param (lowerKeywords) must be boolean")
 		}
 	}
 
@@ -95,7 +95,7 @@ func Transpose(matrix [][]interface{}) [][]interface{} {
 
 /*--- Private Routines ---*/
 
-func (c *Conn) error(str string, args ...interface{}) error {
+func (c *Conn) errorf(str string, args ...interface{}) error {
 	err := fmt.Errorf(str, args...)
 	if c.Conf.SuppressError == false {
 		c.log.Error(err)

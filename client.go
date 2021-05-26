@@ -28,14 +28,13 @@ import (
 	"encoding/hex"
 	"fmt"
 	"math/big"
+	"net/url"
 	"os/user"
 	"regexp"
 	"runtime"
 	"strconv"
 	"sync"
 	"time"
-
-	"github.com/gorilla/websocket"
 )
 
 /*--- Public Interface ---*/
@@ -55,10 +54,30 @@ type ConnConf struct {
 	TLSConfig      *tls.Config
 	SuppressError  bool // Server errors are logged to Error by default
 	// TODO try compressionEnabled: true
-	Logger         Logger // Optional for better control over logging
+	Logger         Logger    // Optional for better control over logging
+	WSHandler      WSHandler // Optional for intercepting websocket traffic
 	CachePrepStmts bool
 
 	Timeout uint32 // Deprecated - Use Query/ConnectTimeout instead
+}
+
+// By default we use the gorilla/websocket implementation however you can also
+// specify a custom websocket handler which you can then use to intercept
+// API traffic. This is handy for:
+//   1. Using a non-gorilla websocket library
+//   2. Emulating Exasol for testing purposes
+//   3. Intercepting and manipulating the traffic (e.g. for buffering, caching etc)
+// See websocket_handler.go for the default implementation.
+// The custom websocket handler must conform to the following interface:
+type WSHandler interface {
+	// tls.Config is optional. If specified SSL should be enabled
+	// time.Duration is the connect timeout (or zero for none)
+	Connect(url.URL, *tls.Config, time.Duration) error
+	EnableCompression(bool)
+	// Write/ReadJSON will be passed structs from api.go
+	WriteJSON(interface{}) error
+	ReadJSON(interface{}) error
+	Close()
 }
 
 type Conn struct {
@@ -68,7 +87,7 @@ type Conn struct {
 	Metadata  *AuthData
 
 	log           Logger
-	ws            *websocket.Conn
+	wsh           WSHandler
 	prepStmtCache map[string]*prepStmt
 	mux           sync.Mutex
 }
@@ -78,6 +97,7 @@ func Connect(conf ConnConf) (*Conn, error) {
 		Conf:          conf,
 		Stats:         map[string]int{},
 		log:           conf.Logger,
+		wsh:           conf.WSHandler,
 		prepStmtCache: map[string]*prepStmt{},
 	}
 
@@ -90,14 +110,18 @@ func Connect(conf ConnConf) (*Conn, error) {
 		c.log = newDefaultLogger()
 	}
 
+	if c.wsh == nil {
+		c.wsh = newDefaultWSHandler()
+	}
+
 	err := c.wsConnect()
 	if err != nil {
-		return nil, c.error("Unable to connect to Exasol: %s", err)
+		return nil, c.errorf("Unable to connect to Exasol: %w", err)
 	}
 
 	err = c.login()
 	if err != nil {
-		return nil, c.error("Unable to login to Exasol: %s", err)
+		return nil, c.errorf("Unable to login to Exasol: %s", err)
 	}
 
 	return c, nil
@@ -113,8 +137,8 @@ func (c *Conn) Disconnect() {
 	if err != nil {
 		c.log.Warning("Unable to disconnect from Exasol: ", err)
 	}
-	c.ws.Close()
-	c.ws = nil
+	c.wsh.Close()
+	c.wsh = nil
 }
 
 func (c *Conn) GetSessionAttr() (*Attributes, error) {
@@ -122,7 +146,7 @@ func (c *Conn) GetSessionAttr() (*Attributes, error) {
 	res := &response{}
 	err := c.send(req, res)
 	if err != nil {
-		return nil, c.error("Unable to get session attributes: %s", err)
+		return nil, c.errorf("Unable to get session attributes: %s", err)
 	}
 	return res.Attributes, nil
 }
@@ -134,7 +158,7 @@ func (c *Conn) EnableAutoCommit() error {
 		Attributes: &Attributes{Autocommit: true},
 	}, &response{})
 	if err != nil {
-		return c.error("Unable to enable autocommit: %s", err)
+		return c.errorf("Unable to enable autocommit: %s", err)
 	}
 	return nil
 }
@@ -151,7 +175,7 @@ func (c *Conn) DisableAutoCommit() error {
 		},
 	}, &response{})
 	if err != nil {
-		return c.error("Unable to disable autocommit: %s", err)
+		return c.errorf("Unable to disable autocommit: %s", err)
 	}
 	return nil
 }
@@ -160,7 +184,7 @@ func (c *Conn) Rollback() error {
 	c.log.Info("Rolling back transaction")
 	_, err := c.execute("ROLLBACK", nil, "", nil, false)
 	if err != nil {
-		return c.error("Unable to rollback: %s", err)
+		return c.errorf("Unable to rollback: %s", err)
 	}
 	return nil
 }
@@ -169,7 +193,7 @@ func (c *Conn) Commit() error {
 	c.log.Info("Committing transaction")
 	_, err := c.execute("COMMIT", nil, "", nil, false)
 	if err != nil {
-		return c.error("Unable to commit: %s", err)
+		return c.errorf("Unable to commit: %s", err)
 	}
 	return nil
 }
@@ -195,7 +219,7 @@ func (c *Conn) Execute(sql string, args ...interface{}) (rowsAffected int64, err
 		case []interface{}:
 			binds = append(binds, b)
 		default:
-			return 0, c.error("Execute's 2nd param (binds) must be []interface{} or [][]interface{}")
+			return 0, c.errorf("Execute's 2nd param (binds) must be []interface{} or [][]interface{}")
 		}
 	}
 	var schema string
@@ -204,7 +228,7 @@ func (c *Conn) Execute(sql string, args ...interface{}) (rowsAffected int64, err
 		case string:
 			schema = s
 		default:
-			return 0, c.error("Execute's 3nd param (schema) must be a string")
+			return 0, c.errorf("Execute's 3nd param (schema) must be a string")
 		}
 	}
 	var dataTypes []DataType
@@ -213,7 +237,7 @@ func (c *Conn) Execute(sql string, args ...interface{}) (rowsAffected int64, err
 		case []DataType:
 			dataTypes = d
 		default:
-			return 0, c.error("Execute's 4th param (data types) must be a []DataType")
+			return 0, c.errorf("Execute's 4th param (data types) must be a []DataType")
 		}
 	}
 	isColumnar := false // Whether or not the passed-in binds are columnar
@@ -222,13 +246,13 @@ func (c *Conn) Execute(sql string, args ...interface{}) (rowsAffected int64, err
 		case bool:
 			isColumnar = ic
 		default:
-			return 0, c.error("Execute's 5th param (isColumnar) must be a boolean")
+			return 0, c.errorf("Execute's 5th param (isColumnar) must be a boolean")
 		}
 	}
 
 	res, err := c.execute(sql, binds, schema, dataTypes, isColumnar)
 	if err != nil {
-		return 0, c.error("Unable to Execute: %s", err)
+		return 0, c.errorf("Unable to Execute: %s", err)
 	} else if res.ResponseData.NumResults > 0 {
 		return res.ResponseData.Results[0].RowCount, nil
 	}
@@ -247,7 +271,7 @@ func (c *Conn) FetchChan(sql string, args ...interface{}) (<-chan []interface{},
 		case []interface{}:
 			binds = b
 		default:
-			return nil, c.error("Fetch's 2nd param (binds) must be []interface{}")
+			return nil, c.errorf("Fetch's 2nd param (binds) must be []interface{}")
 		}
 	}
 	var schema string
@@ -256,24 +280,24 @@ func (c *Conn) FetchChan(sql string, args ...interface{}) (<-chan []interface{},
 		case string:
 			schema = s
 		default:
-			return nil, c.error("Fetch's 3nd param (schema) must be a string")
+			return nil, c.errorf("Fetch's 3nd param (schema) must be a string")
 		}
 	}
 
 	resp, err := c.execute(sql, [][]interface{}{binds}, schema, nil, false)
 	if err != nil {
-		return nil, c.error("Unable to Fetch: %s", err)
+		return nil, c.errorf("Unable to Fetch: %s", err)
 	}
 	respData := resp.ResponseData
 	if respData.NumResults != 1 {
-		return nil, c.error("Unexpected numResults: %v", respData.NumResults)
+		return nil, c.errorf("Unexpected numResults: %v", respData.NumResults)
 	}
 	result := respData.Results[0]
 	if result.ResultType != resultSetType {
-		return nil, c.error("Unexpected result type: %v", result.ResultType)
+		return nil, c.errorf("Unexpected result type: %v", result.ResultType)
 	}
 	if result.ResultSet == nil {
-		return nil, c.error("Missing websocket API resultset")
+		return nil, c.errorf("Missing websocket API resultset")
 	}
 
 	ch := make(chan []interface{}, 1000)
@@ -300,7 +324,7 @@ func (c *Conn) SetTimeout(timeout uint32) error {
 		Attributes: &Attributes{QueryTimeout: timeout},
 	}, &response{})
 	if err != nil {
-		return c.error("Unable to set timeout: %s", err)
+		return c.errorf("Unable to set timeout: %s", err)
 	}
 	return nil
 }
@@ -368,7 +392,7 @@ func (c *Conn) login() error {
 	c.SessionID = authResp.ResponseData.SessionID
 	c.Metadata = authResp.ResponseData
 	c.log.Info("Connected SessionID:", c.SessionID)
-	c.ws.EnableWriteCompression(false)
+	c.wsh.EnableCompression(false)
 
 	return nil
 }

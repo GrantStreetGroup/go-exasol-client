@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"crypto/tls"
 	"fmt"
+	"net/url"
 	"os"
 	"regexp"
 	"strconv"
@@ -488,4 +489,24 @@ func (s *testSuite) TestSetTimeout() {
 	attr, err = c.GetSessionAttr()
 	s.Nil(err)
 	s.Equal(uint32(10), attr.QueryTimeout)
+}
+
+type testWSHandler struct{}
+
+func (wsh *testWSHandler) Connect(u url.URL, s *tls.Config, t time.Duration) error {
+	return fmt.Errorf("Connecting in test handler")
+}
+func (wsh *testWSHandler) WriteJSON(req interface{}) error { return nil }
+func (wsh *testWSHandler) ReadJSON(resp interface{}) error { return nil }
+func (wsh *testWSHandler) EnableCompression(e bool)        {}
+func (wsh *testWSHandler) Close()                          {}
+
+func (s *testSuite) TestWSHandler() {
+	conf := s.connConf()
+	conf.SuppressError = true
+	conf.WSHandler = &testWSHandler{}
+	_, err := Connect(conf)
+	if s.Error(err) {
+		s.Contains(err.Error(), "Connecting in test handler", "Got error")
+	}
 }
