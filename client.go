@@ -111,7 +111,7 @@ func Connect(conf ConnConf) (*Conn, error) {
 	}
 
 	if c.wsh == nil {
-		c.wsh = newDefaultWSHandler()
+		c.wsh = NewDefaultWSHandler()
 	}
 
 	err := c.wsConnect()
