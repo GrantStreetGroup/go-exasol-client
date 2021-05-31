@@ -15,6 +15,7 @@
 package exasol
 
 import (
+	"errors"
 	"fmt"
 	"regexp"
 	"strings"
@@ -38,7 +39,7 @@ func (c *Conn) QuoteIdent(ident string, args ...interface{}) string {
 		case bool:
 			lowerKeywords = b
 		default:
-			c.errorf("QuoteIdent's 2nd param (lowerKeywords) must be boolean")
+			c.error("QuoteIdent's 2nd param (lowerKeywords) must be boolean")
 		}
 	}
 
@@ -95,8 +96,16 @@ func Transpose(matrix [][]interface{}) [][]interface{} {
 
 /*--- Private Routines ---*/
 
-func (c *Conn) errorf(str string, args ...interface{}) error {
-	err := fmt.Errorf(str, args...)
+func (c *Conn) error(text string) error {
+	err := errors.New(text)
+	if !c.Conf.SuppressError {
+		c.log.Error(err)
+	}
+	return err
+}
+
+func (c *Conn) errorf(format string, args ...interface{}) error {
+	err := fmt.Errorf(format, args...)
 	if c.Conf.SuppressError == false {
 		c.log.Error(err)
 	}

@@ -219,7 +219,7 @@ func (c *Conn) Execute(sql string, args ...interface{}) (rowsAffected int64, err
 		case []interface{}:
 			binds = append(binds, b)
 		default:
-			return 0, c.errorf("Execute's 2nd param (binds) must be []interface{} or [][]interface{}")
+			return 0, c.error("Execute's 2nd param (binds) must be []interface{} or [][]interface{}")
 		}
 	}
 	var schema string
@@ -228,7 +228,7 @@ func (c *Conn) Execute(sql string, args ...interface{}) (rowsAffected int64, err
 		case string:
 			schema = s
 		default:
-			return 0, c.errorf("Execute's 3nd param (schema) must be a string")
+			return 0, c.error("Execute's 3nd param (schema) must be a string")
 		}
 	}
 	var dataTypes []DataType
@@ -237,7 +237,7 @@ func (c *Conn) Execute(sql string, args ...interface{}) (rowsAffected int64, err
 		case []DataType:
 			dataTypes = d
 		default:
-			return 0, c.errorf("Execute's 4th param (data types) must be a []DataType")
+			return 0, c.error("Execute's 4th param (data types) must be a []DataType")
 		}
 	}
 	isColumnar := false // Whether or not the passed-in binds are columnar
@@ -246,7 +246,7 @@ func (c *Conn) Execute(sql string, args ...interface{}) (rowsAffected int64, err
 		case bool:
 			isColumnar = ic
 		default:
-			return 0, c.errorf("Execute's 5th param (isColumnar) must be a boolean")
+			return 0, c.error("Execute's 5th param (isColumnar) must be a boolean")
 		}
 	}
 
@@ -271,7 +271,7 @@ func (c *Conn) FetchChan(sql string, args ...interface{}) (<-chan []interface{},
 		case []interface{}:
 			binds = b
 		default:
-			return nil, c.errorf("Fetch's 2nd param (binds) must be []interface{}")
+			return nil, c.error("Fetch's 2nd param (binds) must be []interface{}")
 		}
 	}
 	var schema string
@@ -280,7 +280,7 @@ func (c *Conn) FetchChan(sql string, args ...interface{}) (<-chan []interface{},
 		case string:
 			schema = s
 		default:
-			return nil, c.errorf("Fetch's 3nd param (schema) must be a string")
+			return nil, c.error("Fetch's 3nd param (schema) must be a string")
 		}
 	}
 
@@ -297,7 +297,7 @@ func (c *Conn) FetchChan(sql string, args ...interface{}) (<-chan []interface{},
 		return nil, c.errorf("Unexpected result type: %v", result.ResultType)
 	}
 	if result.ResultSet == nil {
-		return nil, c.errorf("Missing websocket API resultset")
+		return nil, c.error("Missing websocket API resultset")
 	}
 
 	ch := make(chan []interface{}, 1000)
