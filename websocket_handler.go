@@ -27,7 +27,7 @@ type defWSHandler struct {
 	ws *websocket.Conn
 }
 
-func newDefaultWSHandler() *defWSHandler {
+func NewDefaultWSHandler() *defWSHandler {
 	return &defWSHandler{}
 }
 
