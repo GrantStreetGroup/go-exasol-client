@@ -110,14 +110,14 @@ func (c *Conn) StreamExecute(origSQL string, data <-chan []byte) error {
 		if err != nil {
 			if retryableError(err) {
 				if bytesWritten == 0 {
-					c.errorf("Retrying...")
+					c.error("Retrying...")
 					continue
 				}
 				// If there was an error while writing the data
 				// we've lost the data we've written so we can't retry
-				c.errorf("Data already sent can't retry...")
+				c.error("Data already sent can't retry...")
 			}
-			c.errorf(err.Error())
+			c.error(err.Error())
 			return err
 		}
 		break
@@ -158,7 +158,7 @@ func (c *Conn) StreamQuery(exportSQL string) *Rows {
 		for i := 0; i <= 2; i++ {
 			r.Error = r.streamQuery(exportSQL)
 			if retryableError(r.Error) {
-				c.errorf("Retrying...")
+				c.error("Retrying...")
 				r.Error = nil
 				continue
 			}
@@ -296,7 +296,7 @@ func (c *Conn) streamExecuteNoRetry(origSQL string, data <-chan []byte) (
 func (c *Conn) initProxy(sql string) (*Proxy, func(interface{}) error, error) {
 	proxy, err := NewProxy(c.Conf.Host, c.Conf.Port, &bufPool, c.log)
 	if err != nil {
-		c.errorf(err.Error())
+		c.error(err.Error())
 		return nil, nil, err
 	}
 
