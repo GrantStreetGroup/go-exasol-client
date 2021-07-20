@@ -1,8 +1,15 @@
 # go-exasol-client
 
-A simple Go library for connecting to Exasol
+A Go library for connecting to Exasol based on the [Exasol websocket API](https://github.com/exasol/websocket-api).
 
-This is based on the [Exasol websocket API](https://github.com/exasol/websocket-api) so it requires Exasol versions 6.0 and above.
+Also consider using the [Official Exasol Golang driver](https://github.com/exasol/exasol-driver-go). As of July 2021 the primary differences were:
+
+| Feature | This Driver | Official Driver |
+| :- | :-: | :-: |
+| Standard Golang SQL driver interface | No | Yes |
+| Compression | No | Yes |
+| Bulk/Streaming up/download of CSV data | Yes | No |
+| Support for alternate/custom websocket libraries | Yes | No |
 
 ## Examples
 
@@ -88,11 +95,6 @@ func main() {
 }
 
 ```
-
-# TODOs
-
-  - This library needs to be adapted to the standard Go database/sql interface.
-  - Support compression
 
 # Author
 
