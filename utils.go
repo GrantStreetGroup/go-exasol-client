@@ -68,7 +68,13 @@ func (c *Conn) QuoteIdent(ident string, args ...interface{}) string {
 		} else {
 			return fmt.Sprintf(`[%s]`, strings.ToUpper(ident))
 		}
-	} else if regexp.MustCompile(`^[^A-Za-z]`).MatchString(ident) {
+	} else if regexp.MustCompile(`^[^A-Za-z]`).MatchString(ident) ||
+		regexp.MustCompile(`[^A-Za-z0-9_]`).MatchString(ident) {
+		// From docs "...a regular identifier may start with letters of the set
+		//  {a-z, A-Z} and may further contain letters of set {a-z, A-Z, 0-9,_}
+		// For quoted identifiers any characters can be contained within
+		// the quotation marks except the dot ('.')
+		ident = regexp.MustCompile(`\.`).ReplaceAllString(ident, "_")
 		return fmt.Sprintf(`[%s]`, strings.ToUpper(ident))
 	}
 	return ident
