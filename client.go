@@ -479,37 +479,44 @@ func (c *Conn) executePrepStmt(
 }
 
 func (c *Conn) resultsToChan(rs *resultSet, ch chan<- []interface{}) {
-	if rs.NumRows == 0 {
-		// Do nothing
-	} else if rs.ResultSetHandle > 0 {
-		for i := uint64(0); i < rs.NumRows; {
-			fetchReq := &fetchReq{
-				Command:         "fetch",
-				ResultSetHandle: rs.ResultSetHandle,
-				StartPosition:   i,
-				NumBytes:        64 * 1024 * 1024, // Max allowed
-			}
-			fetchRes := &fetchRes{}
-			err := c.send(fetchReq, fetchRes)
-			if err != nil {
-				// Panic because this routine is async so no good
-				// way to tell the caller that something bad happened
-				panic(err)
-			}
-			i += fetchRes.ResponseData.NumRows
-			transposeToChan(ch, fetchRes.ResponseData.Data)
-		}
+	defer close(ch)
 
-		closeRSReq := &closeResultSet{
-			Command:          "closeResultSet",
-			ResultSetHandles: []int{rs.ResultSetHandle},
-		}
-		err := c.send(closeRSReq, &response{})
-		if err != nil {
-			c.log.Warning("Unable to close result set:", err)
-		}
-	} else {
+	// If the resultset < 1000 rows and < 64MB then rs.Data is defined and rs.ResultSetHandle is not
+	// If the resultset < 1000 rows and > 64MB then both rs.Data and rs.ResultSetHandle are defined
+	// If the resultset > 1000 rows then rs.Data is not defined and rs.ResultSetHandle is
+	rowsRetrieved := uint64(0)
+	if rs.Data != nil && len(rs.Data) > 0 {
 		transposeToChan(ch, rs.Data)
+		rowsRetrieved = uint64(len(rs.Data[0]))
 	}
-	close(ch)
+	if rs.ResultSetHandle == 0 {
+		return
+	}
+
+	for rowsRetrieved < rs.NumRows {
+		fetchReq := &fetchReq{
+			Command:         "fetch",
+			ResultSetHandle: rs.ResultSetHandle,
+			StartPosition:   rowsRetrieved,
+			NumBytes:        64 * 1024 * 1024, // Max allowed
+		}
+		fetchRes := &fetchRes{}
+		err := c.send(fetchReq, fetchRes)
+		if err != nil {
+			// Panic because this routine is async so no good
+			// way to tell the caller that something bad happened
+			panic(err)
+		}
+		rowsRetrieved += fetchRes.ResponseData.NumRows
+		transposeToChan(ch, fetchRes.ResponseData.Data)
+	}
+
+	closeRSReq := &closeResultSet{
+		Command:          "closeResultSet",
+		ResultSetHandles: []int{rs.ResultSetHandle},
+	}
+	err := c.send(closeRSReq, &response{})
+	if err != nil {
+		c.log.Warning("Unable to close result set:", err)
+	}
 }

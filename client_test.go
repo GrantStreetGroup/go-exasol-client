@@ -473,6 +473,47 @@ func (s *testSuite) TestFetchSlice() {
 		}
 		s.Equal(expect, got)
 	}
+
+	// Test No results at all
+	got, err = exa.FetchSlice("SELECT * FROM foo WHERE FALSE")
+	if s.NoError(err) {
+		var exp [][]interface{}
+		s.Equal(exp, got)
+	}
+}
+
+func (s *testSuite) TestLargeFetch() {
+	// This results in a payload > 64MB but < 1000 rows which triggers
+	// result handles but still has data in the initial response
+	val := strings.Repeat("x", 2000000)
+	payload := [][]interface{}{{}, {}}
+	for i := 0; i < 100; i++ {
+		payload[0] = append(payload[0], float64(i))
+		payload[1] = append(payload[1], val)
+	}
+	exa := s.exaConn
+	exa.Execute("CREATE TABLE foo ( id INT, val VARCHAR(2000000) )")
+	exa.Execute("INSERT INTO foo VALUES (?,?)", payload, nil, nil, true)
+
+	got, err := exa.FetchSlice("SELECT * FROM foo ORDER BY id")
+	if s.NoError(err) {
+		s.Equal(Transpose(payload), got)
+	}
+
+	// This results in a payload < 64MB but > 1000 rows which triggers
+	// result handles but and no data in the initial response
+	payload = [][]interface{}{{}, {}}
+	for i := 0; i < 2500; i++ {
+		payload[0] = append(payload[0], float64(i))
+		payload[1] = append(payload[1], "a")
+	}
+	exa.Execute("CREATE OR REPLACE TABLE foo ( id INT, val CHAR(1) )")
+	exa.Execute("INSERT INTO foo VALUES (?,?)", payload, nil, nil, true)
+
+	got, err = exa.FetchSlice("SELECT * FROM foo ORDER BY id")
+	if s.NoError(err) {
+		s.Equal(Transpose(payload), got)
+	}
 }
 
 func (s *testSuite) TestSetTimeout() {
