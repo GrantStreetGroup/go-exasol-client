@@ -39,7 +39,7 @@ import (
 
 /*--- Public Interface ---*/
 
-const ExasolAPIVersion = 1
+const ExasolAPIVersion = 3
 const DriverVersion = "2"
 
 type ConnConf struct {

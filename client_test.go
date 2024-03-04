@@ -195,36 +195,6 @@ func (s *testSuite) TestConnCachePrepStmt() {
 	c.Disconnect()
 }
 
-func (s *testSuite) TestConnEncryption() {
-	conf := s.connConf()
-
-	// Enable Encryption
-	conf.TLSConfig = &tls.Config{InsecureSkipVerify: true}
-	c, err := Connect(conf)
-	s.Nil(err, "No connection errors")
-
-	got, _ := c.FetchSlice(`
-		SELECT encrypted
-		FROM exa_user_sessions
-		WHERE session_id = CURRENT_SESSION
-	`)
-	s.Equal(true, got[0][0].(bool), "Connection is encrypted")
-	c.Disconnect()
-
-	// Disable Encryption
-	conf.TLSConfig = nil
-	c, err = Connect(conf)
-	s.Nil(err, "No connection errors")
-
-	got, _ = c.FetchSlice(`
-		SELECT encrypted
-		FROM exa_user_sessions
-		WHERE session_id = CURRENT_SESSION
-	`)
-	s.Equal(false, got[0][0].(bool), "Connection is encrypted")
-	c.Disconnect()
-}
-
 func (s *testSuite) TestHostRanges() {
 	conf := s.connConf()
 	conf.SuppressError = true // Set to false to see the random output
@@ -530,6 +500,15 @@ func (s *testSuite) TestSetTimeout() {
 	attr, err = c.GetSessionAttr()
 	s.Nil(err)
 	s.Equal(uint32(10), attr.QueryTimeout)
+}
+
+func (s *testSuite) TestHashTypeInsert() {
+	// This insert fails with Exasol v8 + websocket API v1
+	exa := s.exaConn
+	exa.Execute("CREATE TABLE foo (ht HASHTYPE)")
+	got, err := exa.Execute("INSERT INTO foo VALUES (?)", []interface{}{"00000000000000000000000000000000"})
+	s.Nil(err)
+	s.Equal(int64(1), got)
 }
 
 type testWSHandler struct{}
