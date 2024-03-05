@@ -22,7 +22,6 @@ func main() {
         Port:     8563,
         Username: "user",
         Password: "pass",
-        TLSConfig: &tls.Config{...}, // If specified encryption is enabled
     }
     conn, err = exasol.Connect(conf)
     defer conn.Disconnect()

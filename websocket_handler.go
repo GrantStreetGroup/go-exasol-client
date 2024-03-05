@@ -38,11 +38,11 @@ func init() {
 	defaultDialer.EnableCompression = false
 }
 
-func (wsh *defWSHandler) Connect(url url.URL, tls *tls.Config, timeout time.Duration) error {
+func (wsh *defWSHandler) Connect(url url.URL, tlsCfg *tls.Config, timeout time.Duration) error {
 	if timeout != time.Duration(0) {
 		defaultDialer.HandshakeTimeout = timeout
 	}
-	defaultDialer.TLSClientConfig = tls
+	defaultDialer.TLSClientConfig = tlsCfg
 
 	// According to documentation:
 	// > It is safe to call Dialer's methods concurrently.

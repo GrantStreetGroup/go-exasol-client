@@ -106,6 +106,10 @@ func Connect(conf ConnConf) (*Conn, error) {
 		c.Conf.QueryTimeout = time.Duration(c.Conf.Timeout) * time.Second
 	}
 
+	if c.Conf.TLSConfig == nil {
+		c.Conf.TLSConfig = &tls.Config{}
+	}
+
 	if c.log == nil {
 		c.log = newDefaultLogger()
 	}
