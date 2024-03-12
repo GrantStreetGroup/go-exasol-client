@@ -43,22 +43,23 @@ func (s *testSuite) TestQueryTimeout() {
 	// First create a function that sleeps for 3 sec
 	// to simulate a long running query
 	c.Execute(`
-		CREATE SCRIPT sleep(sec) AS
-		local ntime = os.time() + sec
-		repeat until os.time() > ntime
-		exit({rows_affected=123})
+CREATE OR REPLACE PYTHON3 SCALAR SCRIPT sleep("d" INTEGER) RETURNS INTEGER AS
+import subprocess
+def run(ctx):
+	subprocess.check_output("sleep " + str(ctx.d), shell=True)
+	return 123
 	`)
 
 	// Now run the script and verify that it didn't timeout
-	got, _ := c.Execute(`EXECUTE SCRIPT sleep(1)`)
-	s.Equal(int64(123), got, "Did not time out")
+	got, err := c.FetchSlice(`SELECT sleep(1)`)
+	s.Nil(err, "No query errors")
+	s.Equal(123.0, got[0][0].(float64), "Did not time out")
 
 	// Now run the script longer and verify that it aborted
-	got, err = c.Execute(`EXECUTE SCRIPT sleep(10)`)
+	_, err = c.FetchSlice(`SELECT sleep(10)`)
 	if s.Error(err) {
-		s.Contains(err.Error(), "Server terminated statement", "Got error")
+		s.Contains(err.Error(), "timeout", "Got error")
 	}
-	s.Equal(int64(0), got, "Timed out")
 
 	// No need to disconnect because the server killed the connection
 }
