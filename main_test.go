@@ -14,6 +14,7 @@
 package exasol
 
 import (
+	"crypto/tls"
 	"flag"
 	"testing"
 
@@ -51,11 +52,11 @@ func initTestSuite() *testSuite {
 
 func (s *testSuite) connConf() ConnConf {
 	return ConnConf{
-		Host:     *testHost,
-		Port:     uint16(*testPort),
-		Username: "SYS",
-		Password: *testPass,
-		Logger:   s.log,
+		Host:      *testHost,
+		Port:      uint16(*testPort),
+		Username:  "SYS",
+		Password:  *testPass,
+		TLSConfig: &tls.Config{InsecureSkipVerify: true},
 	}
 }
 

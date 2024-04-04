@@ -319,7 +319,7 @@ func (c *Conn) initProxy(sql string) (*Proxy, func(interface{}) error, error) {
 }
 
 func retryableError(err error) bool {
-	retryableError := regexp.MustCompile(`failed after 0 bytes.+Connection refused`)
+	retryableError := regexp.MustCompile(`(write: broken pipe|failed after 0 bytes.+(Connection refused|Couldn't connect to server))`)
 	if err != nil &&
 		retryableError.MatchString(err.Error()) {
 		return true

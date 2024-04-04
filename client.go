@@ -39,7 +39,7 @@ import (
 
 /*--- Public Interface ---*/
 
-const ExasolAPIVersion = 1
+const ExasolAPIVersion = 3
 const DriverVersion = "2"
 
 type ConnConf struct {
@@ -104,6 +104,10 @@ func Connect(conf ConnConf) (*Conn, error) {
 	if c.Conf.Timeout > 0 {
 		c.log.Warning("exasol.ConnConf.Timeout option is deprecated. Use QueryTimeout instead.")
 		c.Conf.QueryTimeout = time.Duration(c.Conf.Timeout) * time.Second
+	}
+
+	if c.Conf.TLSConfig == nil {
+		c.Conf.TLSConfig = &tls.Config{}
 	}
 
 	if c.log == nil {
