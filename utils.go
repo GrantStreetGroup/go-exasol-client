@@ -25,6 +25,13 @@ import (
 var keywordLock sync.RWMutex
 var keywords map[string]bool
 
+// pseudoColumns contains identifiers that Exasol disallows as column/identifier
+// names but does not list as reserved in sys.exa_sql_keywords. This list
+// supplements the dynamic keyword cache for such cases.
+var pseudoColumns = map[string]bool{
+	"rownum": true,
+}
+
 /*--- Public Interface ---*/
 
 // The optional second argument to QuoteIdent is for backwards compatibility.
@@ -62,6 +69,9 @@ func (c *Conn) QuoteIdent(ident string, args ...interface{}) string {
 		keywordLock.Unlock()
 	}
 	_, isKeyword := keywords[strings.ToLower(ident)]
+	if !isKeyword {
+		_, isKeyword = pseudoColumns[strings.ToLower(ident)]
+	}
 	if isKeyword {
 		if lowerKeywords {
 			return fmt.Sprintf(`[%s]`, strings.ToLower(ident))
