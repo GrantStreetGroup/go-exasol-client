@@ -6,6 +6,8 @@ func (s *testSuite) TestQuoteIdent() {
 	s.Equal(`"test"`, exa.QuoteIdent(`"test"`), "Already quoted")
 	s.Equal("[SELECT]", exa.QuoteIdent("SELect"), "Keyword")
 	s.Equal("[select]", exa.QuoteIdent("SELect", true), "Keyword")
+	s.Equal("[ROWNUM]", exa.QuoteIdent("ROWNUM"), "Pseudo-column ROWNUM")
+	s.Equal("[rownum]", exa.QuoteIdent("rownum", true), "Pseudo-column ROWNUM")
 	s.Equal("[-MYID]", exa.QuoteIdent("-myid"), "Special characters")
 	s.Equal("[MAX(T_ID)]", exa.QuoteIdent("max(t.id)"), "Special characters")
 	s.Equal("okAY", exa.QuoteIdent("okAY"), "Default")
