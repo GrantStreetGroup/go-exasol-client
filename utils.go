@@ -25,11 +25,9 @@ import (
 var keywordLock sync.RWMutex
 var keywords map[string]bool
 
-// pseudoColumns contains identifiers that Exasol treats as pseudo-columns and
-// disallows as unquoted column/identifier names, even though they may not be
-// listed as reserved in sys.exa_sql_keywords. This list supplements the
-// dynamic lookup and must be updated as new Exasol versions introduce new
-// pseudo-columns.
+// pseudoColumns contains identifiers that Exasol disallows as column/identifier
+// names but does not list as reserved in sys.exa_sql_keywords. This list
+// supplements the dynamic keyword cache for such cases.
 var pseudoColumns = map[string]bool{
 	"rownum": true,
 }
