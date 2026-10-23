@@ -78,6 +78,15 @@ func (c *Conn) send(request, response interface{}) error {
 	return receiver(response)
 }
 
+// Exasol doesn't send a response to abortQuery; the aborted statement's own reply carries the error
+func (c *Conn) abortQuery() error {
+	err := c.wsh.WriteJSON(&request{Command: "abortQuery"})
+	if err != nil {
+		return c.errorf("Unable to abort query: %s", err)
+	}
+	return nil
+}
+
 func (c *Conn) asyncSend(request interface{}) (func(interface{}) error, error) {
 	err := c.wsh.WriteJSON(request)
 	if err != nil {

@@ -56,9 +56,13 @@ import (
 	"errors"
 	"fmt"
 	"regexp"
+	"strings"
 	"sync"
 	"time"
 )
+
+// How long to wait for Exasol to acknowledge an abortQuery; a var so tests can shrink it
+var abortGracePeriod = 30 * time.Second
 
 func (c *Conn) BulkInsert(schema, table string, data *bytes.Buffer) (err error) {
 	sql := c.getTableImportSQL(schema, table)
@@ -209,32 +213,18 @@ func (r *Rows) streamQuery(exportSQL string) error {
 	respErr := make(chan error, 1)
 	go func() {
 		// This is a blocking reader of the CSV data
-		r.BytesRead, err = r.proxy.Read(r.Data, r.stop)
-		dataErr <- err
+		bytesRead, e := r.proxy.Read(r.Data, r.stop)
+		r.BytesRead = bytesRead
+		dataErr <- e
 	}()
 	go func() {
 		// This returns the result of the EXPORT query
-		err := receiver(&response{})
-		respErr <- err
+		respErr <- receiver(&response{})
 	}()
 
-	timeout := make(<-chan time.Time)
-	if r.conn.Conf.QueryTimeout.Seconds() > 0 {
-		timeout = time.After(r.conn.Conf.QueryTimeout)
-	}
-
-	select {
-	case err = <-dataErr:
-		if err == nil {
-			err = <-respErr
-		}
-	case err = <-respErr:
-		if err == nil {
-			err = <-dataErr
-		}
-	case <-timeout:
-		err = errors.New("Timed out doing BulkQuery")
-	}
+	// Shutdown rather than r.stop so a retry doesn't inherit a stale stop.
+	// The proxy reader must be finished before the caller closes r.Data.
+	err = r.conn.bulkResult(dataErr, respErr, r.proxy.Shutdown, true, "Timed out doing BulkQuery")
 
 	// If we purposefully prematurely closed the connection
 	// we don't want to raise any errors.
@@ -256,34 +246,24 @@ func (c *Conn) streamExecuteNoRetry(origSQL string, data <-chan []byte) (
 
 	dataErr := make(chan error, 1)
 	respErr := make(chan error, 1)
+	written := make(chan int64, 1)
 	go func() {
 		// This is a blocking writer of the CSV data
-		var e error
-		bytesWritten, e = proxy.Write(data)
+		n, e := proxy.Write(data)
+		written <- n
 		dataErr <- e
 	}()
 	go func() {
 		// This returns the result of the IMPORT query
-		e := receiver(&response{})
-		respErr <- e
+		respErr <- receiver(&response{})
 	}()
 
-	timeout := make(<-chan time.Time)
-	if c.Conf.QueryTimeout.Seconds() > 0 {
-		timeout = time.After(c.Conf.QueryTimeout)
-	}
+	err = c.bulkResult(dataErr, respErr, proxy.Shutdown, false, "Timed out doing StreamExecute")
 
+	// Only trust the count if the writer has finished
 	select {
-	case err = <-dataErr:
-		if err == nil {
-			err = <-respErr
-		}
-	case err = <-respErr:
-		if err == nil {
-			err = <-dataErr
-		}
-	case <-timeout:
-		err = fmt.Errorf("Timed out doing StreamExecute")
+	case bytesWritten = <-written:
+	default:
 	}
 
 	if err != nil {
@@ -291,6 +271,75 @@ func (c *Conn) streamExecuteNoRetry(origSQL string, data <-chan []byte) (
 	}
 
 	return bytesWritten, err
+}
+
+// bulkResult waits for the proxy transfer and for the IMPORT/EXPORT statement's reply.
+// The reply is always read, even after a proxy failure or timeout, so the websocket
+// stays in sync for the next statement on this connection.
+func (c *Conn) bulkResult(
+	dataErr, respErr <-chan error, abandon func(), waitForData bool, timeoutMsg string,
+) error {
+	var timeout <-chan time.Time
+	if c.Conf.QueryTimeout.Seconds() > 0 {
+		timeout = time.After(c.Conf.QueryTimeout)
+	}
+
+	var gotData, gotResp, timedOut, unacknowledged, abandoned bool
+	var dErr, rErr error
+	abandonOnce := func() {
+		if !abandoned {
+			abandoned = true
+			abandon()
+		}
+	}
+
+	for !(gotResp && (gotData || (!waitForData && (rErr != nil || unacknowledged)))) {
+		select {
+		case dErr = <-dataErr:
+			gotData = true
+			dataErr = nil
+			if dErr != nil {
+				abandonOnce()
+			}
+		case rErr = <-respErr:
+			gotResp = true
+			respErr = nil
+			if rErr != nil {
+				abandonOnce()
+			}
+		case <-timeout:
+			if !timedOut {
+				timedOut = true
+				abandonOnce()
+				c.abortQuery()
+				timeout = time.After(abortGracePeriod)
+			} else {
+				unacknowledged = true
+				gotResp = true
+				respErr = nil
+				timeout = nil
+			}
+		}
+	}
+
+	var msgs []string
+	if timedOut {
+		msg := timeoutMsg
+		if unacknowledged {
+			msg += " (Exasol did not acknowledge abortQuery)"
+		}
+		msgs = append(msgs, msg)
+	}
+	if rErr != nil {
+		msgs = append(msgs, rErr.Error())
+	}
+	if dErr != nil {
+		msgs = append(msgs, "proxy: "+dErr.Error())
+	}
+	if len(msgs) == 0 {
+		return nil
+	}
+	return errors.New(strings.Join(msgs, "; "))
 }
 
 func (c *Conn) initProxy(sql string) (*Proxy, func(interface{}) error, error) {
