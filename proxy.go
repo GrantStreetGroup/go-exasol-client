@@ -28,16 +28,19 @@ type Proxy struct {
 	Host string
 	Port uint32
 
-	conn    net.Conn
-	running bool
-	pool    *sync.Pool
-	log     Logger
+	conn     net.Conn
+	running  bool
+	pool     *sync.Pool
+	log      Logger
+	done     chan struct{} // Closed by Shutdown so a blocked Read gives up
+	doneOnce sync.Once
 }
 
 func NewProxy(host string, port uint16, bufPool *sync.Pool, log Logger) (*Proxy, error) {
 	p := &Proxy{
 		pool: bufPool,
 		log:  log,
+		done: make(chan struct{}),
 	}
 
 	var err error
@@ -136,6 +139,8 @@ DATA:
 		case <-stop:
 			p.Shutdown()
 			break DATA
+		case <-p.done:
+			break DATA
 		case data <- chunk:
 		}
 	}
@@ -185,6 +190,7 @@ func (p *Proxy) Shutdown() {
 		}
 		p.running = false
 	}
+	p.doneOnce.Do(func() { close(p.done) })
 }
 
 func (p *Proxy) IsRunning() bool {
@@ -196,9 +202,10 @@ func (p *Proxy) IsRunning() bool {
 func (p *Proxy) readLine() ([]byte, error) {
 	var line bytes.Buffer
 	var err error
+	var length int
 	b := make([]byte, 1)
 	for {
-		length, err := p.conn.Read(b)
+		length, err = p.conn.Read(b)
 		if err != nil || length == 0 {
 			break
 		} else if b[0] == '\r' {

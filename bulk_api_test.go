@@ -3,6 +3,7 @@ package exasol
 import (
 	"bytes"
 	"fmt"
+	"time"
 )
 
 func (s *testSuite) TestBulkInsert() {
@@ -220,4 +221,153 @@ func (s *testSuite) TestStreamQuery() {
 	s.Equal("300000\x00300000\x00\n29999", csv[:20], "Beginning ok")
 	s.Equal("2\x002\x00\n1\x001\x00\n", csv[len(csv)-10:], "End ok")
 	s.Equal(int64(4277790), rows.BytesRead)
+}
+
+func (s *testSuite) TestStreamQueryProxyFailure() {
+	s.execute(`CREATE TABLE foo ( id INT, val INT )`)
+	// Inserts 300K rows
+	s.execute(`INSERT INTO foo SELECT row_number() over() c, local.c FROM dual CONNECT BY LEVEL <= 3e5`)
+
+	s.exaConn.Conf.SuppressError = true
+	rows := s.exaConn.StreamQuery(fmt.Sprintf(`
+		EXPORT ( SELECT t.id, t.val, NULL FROM %s.foo AS t ORDER BY t.id DESC NULLS LAST)
+		INTO CSV AT '%%s' FILE 'data.csv'
+		DELIMIT = NEVER
+		COLUMN SEPARATOR = '0x00'
+	`, s.qschema))
+
+	first, ok := <-rows.Data
+	s.True(ok, "Got the first chunk")
+	rows.Pool.Put(first)
+	rows.proxy.conn.Close()
+	for d := range rows.Data {
+		rows.Pool.Put(d)
+	}
+	rows.Close()
+
+	if s.Error(rows.Error) {
+		s.Contains(rows.Error.Error(), "Server Error")
+		s.Contains(rows.Error.Error(), "proxy:")
+	}
+
+	// The connection must still be usable
+	expect := [][]any{{float64(1)}}
+	s.Equal(expect, s.fetch("SELECT 1"))
+}
+
+func (s *testSuite) TestStreamQueryRetryAfterReplyError() {
+	s.execute(`CREATE TABLE foo ( id INT, val INT )`)
+	// Inserts 300K rows
+	s.execute(`INSERT INTO foo SELECT row_number() over() c, local.c FROM dual CONNECT BY LEVEL <= 3e5`)
+	s.exaConn.Conf.SuppressError = true
+
+	// Reuse one Rows across attempts the way StreamQuery's retry loop does
+	r := &Rows{
+		Data: make(chan []byte, 1),
+		Pool: &bufPool,
+		conn: s.exaConn,
+		stop: make(chan bool, 1),
+	}
+	err := r.streamQuery("asdf")
+	if s.Error(err) {
+		s.Contains(err.Error(), "syntax error")
+	}
+
+	var csvLen int64
+	drained := make(chan struct{})
+	go func() {
+		for d := range r.Data {
+			csvLen += int64(len(d))
+			r.Pool.Put(d)
+		}
+		close(drained)
+	}()
+	err = r.streamQuery(fmt.Sprintf(`
+		EXPORT ( SELECT t.id, t.val, NULL FROM %s.foo AS t ORDER BY t.id DESC NULLS LAST)
+		INTO CSV AT '%%s' FILE 'data.csv'
+		DELIMIT = NEVER
+		COLUMN SEPARATOR = '0x00'
+	`, s.qschema))
+	close(r.Data)
+	<-drained
+
+	s.NoError(err)
+	s.Equal(int64(4277790), csvLen, "The retry streamed everything")
+	s.Equal(int64(4277790), r.BytesRead)
+}
+
+func (s *testSuite) TestStreamExecuteTimeout() {
+	conf := s.connConf()
+	conf.QueryTimeout = 2 * time.Second
+	c, err := Connect(conf)
+	if !s.NoError(err) {
+		return
+	}
+	defer c.Disconnect()
+	s.NoError(c.SetTimeout(0))
+	c.Conf.SuppressError = true
+
+	s.execute(`CREATE TABLE foo ( id INT, val VARCHAR(10) )`)
+	s.NoError(s.exaConn.Commit())
+
+	// Send one row then stall so the client timeout fires mid-IMPORT
+	data := make(chan []byte, 1)
+	data <- []byte("1,'a'\n")
+	defer close(data)
+	err = c.StreamExecute(fmt.Sprintf(
+		"IMPORT INTO %s.foo FROM CSV AT '%%s' FILE 'data.csv'", s.qschema,
+	), data)
+	if s.Error(err) {
+		s.Contains(err.Error(), "Timed out doing StreamExecute")
+		s.NotContains(err.Error(), "did not acknowledge")
+	}
+
+	got, err := c.FetchSlice("SELECT 1")
+	if s.NoError(err) {
+		s.Equal([][]any{{float64(1)}}, got)
+	}
+}
+
+func (s *testSuite) TestStreamQueryTimeout() {
+	conf := s.connConf()
+	conf.QueryTimeout = 2 * time.Second
+	c, err := Connect(conf)
+	if !s.NoError(err) {
+		return
+	}
+	defer c.Disconnect()
+	s.NoError(c.SetTimeout(0))
+	c.Conf.SuppressError = true
+
+	s.execute(`CREATE TABLE foo ( a INT, b INT, c INT, d INT )`)
+	// Inserts 3M rows
+	s.execute(`INSERT INTO foo SELECT level, level, level, level FROM dual CONNECT BY LEVEL <= 3e6`)
+	s.NoError(s.exaConn.Commit())
+
+	rows := c.StreamQuery(fmt.Sprintf(`
+		EXPORT %s.foo INTO CSV AT '%%s' FILE 'data.csv'
+	`, s.qschema))
+
+	first, ok := <-rows.Data
+	if !s.True(ok, "Got the first chunk") {
+		rows.Close()
+		s.T().Log(rows.Error)
+		return
+	}
+	rows.Pool.Put(first)
+	time.Sleep(4 * time.Second)
+	for d := range rows.Data {
+		rows.Pool.Put(d)
+	}
+	rows.Close()
+
+	if s.Error(rows.Error) {
+		s.Contains(rows.Error.Error(), "Timed out doing BulkQuery")
+		s.NotContains(rows.Error.Error(), "did not acknowledge")
+	}
+
+	got, err := c.FetchSlice("SELECT 1")
+	if s.NoError(err) {
+		s.Equal([][]any{{float64(1)}}, got)
+	}
 }
