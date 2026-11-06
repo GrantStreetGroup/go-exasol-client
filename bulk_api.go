@@ -114,7 +114,7 @@ func (c *Conn) StreamExecute(origSQL string, data <-chan []byte) error {
 		if err != nil {
 			if retryableError(err) {
 				if bytesWritten == 0 {
-					c.error("Retrying...")
+					c.log.Warning("Retrying...")
 					continue
 				}
 				// If there was an error while writing the data
@@ -162,7 +162,7 @@ func (c *Conn) StreamQuery(exportSQL string) *Rows {
 		for i := 0; i <= 2; i++ {
 			r.Error = r.streamQuery(exportSQL)
 			if retryableError(r.Error) {
-				c.error("Retrying...")
+				c.log.Warning("Retrying...")
 				r.Error = nil
 				continue
 			}
